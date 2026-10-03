@@ -1,4 +1,9 @@
-"""Conversation platform for Muse."""
+"""Conversation platform for Muse.
+
+Note: with the local gadget bridge this is one-way. Messages are delivered
+into your Muse chat and the entity replies "Sent to Muse." -- Muse's actual
+answer appears in the Muse app, not back through Home Assistant.
+"""
 
 from __future__ import annotations
 
@@ -8,14 +13,13 @@ from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationInput, ConversationResult
 from homeassistant.components.conversation.chat_log import ChatLog
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_TOKEN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
-from .muse_client import MuseAPIError, MuseClient, StubMuseClient
+from .muse_client import MuseAPIError, MuseClient
 
 
 async def async_setup_entry(
@@ -24,12 +28,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Muse conversation entity."""
-    client: MuseClient = StubMuseClient(token=entry.data[CONF_TOKEN])
+    client: MuseClient = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([MuseConversationEntity(entry, client)])
 
 
 class MuseConversationEntity(conversation.ConversationEntity):
-    """Conversation entity that answers through Muse."""
+    """Conversation entity that delivers messages to Muse."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -54,7 +58,7 @@ class MuseConversationEntity(conversation.ConversationEntity):
     async def _async_handle_message(
         self, user_input: ConversationInput, chat_log: ChatLog
     ) -> ConversationResult:
-        """Handle a message from the user and return Muse's reply."""
+        """Handle a message from the user and confirm delivery to Muse."""
         try:
             reply = await self._client.async_send_message(
                 user_input.text, user_input.conversation_id

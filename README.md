@@ -1,29 +1,52 @@
 # Muse Conversation for Home Assistant
 
-A custom Home Assistant integration that adds **Muse** (Meta's AI agent) as a
-conversation agent, so it can answer through your voice assistants and the
-Assist pipeline.
+A custom Home Assistant integration that connects **Muse** (Meta's AI agent)
+to Home Assistant: send Muse messages from automations, and pick Muse as a
+conversation agent.
 
-## Status: scaffold
+## How it works (and its limits)
 
-The Home Assistant plumbing is complete and follows the current
-`ConversationEntity` API (verified against upstream `dev`):
+Meta has not published a public HTTP chat API for Muse, so this integration
+uses the **local gadget bridge**: Meta's open-source Linux gadget SDK
+([muse-gadget-sdk](https://github.com/facebookincubator/muse-gadget-sdk))
+running as a service on the same host as Home Assistant. The service holds
+your paired, encrypted session to Muse; this integration hands it messages
+over a local Unix socket and it posts them into your Muse chat.
 
-- Config flow with token setup (`config_flow.py`)
-- Conversation entity registered as an assistant (`conversation.py`)
-- HACS metadata (`hacs.json`)
+**This is one-way.** The SDK's chat endpoint returns a delivery ack, not the
+reply. Muse's answer appears in the Muse app, not back in Home Assistant.
+So:
 
-**The last mile is the transport.** As of October 2026 Meta has not published
-a public HTTP chat API for Muse. The gadget SDK
-(`facebookincubator/muse-gadget-sdk`) pairs devices with the Muse app over
-Bluetooth; its `mgst_...` tokens are device pairing tokens, not chat API
-keys. So `muse_client.py` currently ships a stub that fails loudly instead of
-pretending to call an endpoint that doesn't exist.
+- `notify.muse` from automations/scripts: **works today**. "The garage
+  door's been open an hour" lands in your Muse chat.
+- Conversation entity / voice assistant: accepts what you say, delivers it
+  to Muse, and replies "Sent to Muse." The actual answer comes back in the
+  app. True two-way voice (ask through a satellite, hear the answer back)
+  needs Meta to open a reply channel.
 
-To finish it, implement `HttpMuseClient` in
-`custom_components/muse_conversation/muse_client.py` once Meta documents an
-endpoint (or build a local bridge around the Linux gadget SDK). Nothing else
-needs to change.
+The transport is isolated in `muse_client.py`. If Meta ever documents a real
+chat API, that's the one file that changes.
+
+## Prerequisites (bridge)
+
+On the Linux host that runs Home Assistant (needs Bluetooth for pairing):
+
+1. Install the gadget SDK service:
+   ```sh
+   git clone https://github.com/facebookincubator/muse-gadget-sdk
+   cd muse-gadget-sdk/linux
+   bash install.sh
+   ```
+2. Pair it once: `sudo musegadget pair`, then add the device in the Muse
+   app (Settings > Devices, Developer mode on).
+3. Verify delivery:
+   ```sh
+   echo "hello from Home Assistant" | musegadget send-user-msg
+   # -> "Sent to your Muse." (check the app)
+   ```
+
+The service socket defaults to `/run/musegadget/musegadget.sock`. It must be
+reachable from Home Assistant, so the service has to run on the same machine.
 
 ## Install
 
@@ -37,11 +60,38 @@ restart Home Assistant.
 Copy `custom_components/muse_conversation` into your Home Assistant
 `custom_components` directory and restart.
 
-Then go to **Settings > Devices & Services > Add Integration**, search for
-"Muse Conversation", and enter your API token.
+Then **Settings > Devices & Services > Add Integration**, search for
+"Muse Conversation", and choose:
 
-Once added, pick **Muse** as the conversation agent for your voice
-assistant under **Settings > Voice assistants**.
+- **Local gadget bridge (works today)** — enter the service socket path
+  (the default is usually right). The flow checks the socket is reachable.
+- **Direct API token (not yet available)** — stores a token for a future
+  public Muse API. Currently a stub.
+
+## Usage
+
+**Notify service** (`notify.muse`) in automations and scripts:
+
+```yaml
+action: notify.muse
+data:
+  message: "The garage door has been open for an hour."
+```
+
+Target a side chat with `data.session_id` (letters, digits, dashes, up to 64
+chars) or `target`:
+
+```yaml
+action: notify.muse
+data:
+  message: "Summary of today's energy usage?"
+  data:
+    session_id: "daily-brief"
+```
+
+**Conversation agent:** pick **Muse** under **Settings > Voice assistants**.
+Spoken input is delivered to your Muse chat; you'll hear "Sent to Muse."
+back, and the reply appears in the app.
 
 ## Layout
 
@@ -49,9 +99,10 @@ assistant under **Settings > Voice assistants**.
 custom_components/muse_conversation/
 ├── __init__.py        # config entry setup / unload
 ├── manifest.json      # integration metadata
-├── config_flow.py     # token setup UI
-├── conversation.py    # ConversationEntity: the assistant itself
-├── muse_client.py     # transport to Muse (stub; implement here)
+├── config_flow.py     # transport choice + socket/token setup
+├── conversation.py    # ConversationEntity (one-way delivery)
+├── notify.py          # notify.muse service
+├── muse_client.py     # transports: LocalBridgeMuseClient, StubMuseClient
 ├── const.py
 ├── strings.json
 └── translations/en.json
@@ -63,5 +114,6 @@ custom_components/muse_conversation/
   at 0.116, from 2020). This integration targets the modern conversation
   entity API, so develop against a current checkout or just drop it into
   your running HA.
-- The stub raises a clear error through the voice pipeline if Muse can't be
-  reached, so failures show up as spoken replies instead of silence.
+- Failures surface as spoken replies / service errors instead of silence.
+- `iot_class` is `cloud_polling`; the bridge itself holds a persistent
+  session via the musegadget service.
