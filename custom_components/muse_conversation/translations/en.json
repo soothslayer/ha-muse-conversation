@@ -1,0 +1,1 @@
+{"config":{"abort":{"already_configured":"Muse is already configured."},"error":{"empty_token":"Enter a token to continue."},"step":{"user":{"data":{"token":"API token"},"description":"Enter the API token for Muse. (Meta has not published a public chat API yet; this token is stored for when one exists.)","title":"Connect to Muse"}}}}
