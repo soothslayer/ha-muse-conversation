@@ -149,10 +149,10 @@ index 03da07e..900474b 100644
              (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
-index 0000000..94f588c
+index 0000000..34eb67e
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,238 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -167,6 +167,7 @@ index 0000000..94f588c
 +import asyncio
 +import json
 +import logging
++import re
 +import time
 +
 +MAX_LINE_BYTES = 64 * 1024
@@ -195,11 +196,13 @@ index 0000000..94f588c
 +            "events": 0, "content": 0, "parented": 0, "root_matches": 0,
 +            "session_matches": 0, "outer_parent_matches": 0,
 +        }
++        self._event_kinds: dict[str, int] = {}
 +
 +    def log_summary(self) -> None:
 +        """Log protocol counts only, never text, identifiers, or credentials."""
 +        log.info("reply stream summary: %s matched_messages=%d roots=%d",
 +                 self._diagnostics, len(self._messages), len(self._roots or ()))
++        log.info("reply event kinds: %s", self._event_kinds)
 +
 +    def fail(self, message: str) -> None:
 +        self.error = message
@@ -266,6 +269,14 @@ index 0000000..94f588c
 +
 +    def _event(self, event: dict, size: int) -> None:
 +        self._diagnostics["events"] += 1
++        # Only bounded protocol label names, never arbitrary event payloads.
++        labels = []
++        for key in ("type", "event"):
++            value = event.get(key)
++            labels.append(value if isinstance(value, str) and re.fullmatch(r"[a-z_.]{1,48}", value) else "other")
++        label = "/".join(labels)
++        if len(self._event_kinds) < 16 or label in self._event_kinds:
++            self._event_kinds[label] = self._event_kinds.get(label, 0) + 1
 +        if event.get("type") != "event":
 +            return
 +        seq = event.get("seq")

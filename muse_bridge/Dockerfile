@@ -1,7 +1,4 @@
 FROM debian:bookworm-slim
-ARG BUILD_VERSION=0.3.5
-ARG BUILD_ARCH
-LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUILD_ARCH}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dbus python3-gi python3-cryptography \
     ca-certificates curl git && rm -rf /var/lib/apt/lists/*
@@ -16,3 +13,7 @@ RUN curl -fsSL https://github.com/facebookincubator/muse-gadget-sdk/archive/3229
 COPY main.py /app/main.py
 ENV PYTHONUNBUFFERED=1
 CMD ["/opt/venv/bin/python", "/app/main.py"]
+
+ARG BUILD_VERSION=0.3.6
+ARG BUILD_ARCH
+LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUILD_ARCH}"
