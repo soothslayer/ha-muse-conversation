@@ -38,7 +38,8 @@ Install and pair the [Muse Bridge app](muse_bridge/DOCS.md) on the same Home
 Assistant box. It runs the patched SDK, stores pairing credentials in private
 app data, and shares `/share/muse-conversation/musegadget.sock` with HA Core.
 It exposes no network port and advertises no shell or file commands to Muse.
-Bluetooth on the HA host is needed for initial phone pairing; the PE's own
+On Raspberry Pi, use HA OS 18.3 or newer to avoid its Bluetooth advertising
+regression. Bluetooth on the HA host is needed for initial phone pairing; the PE's own
 pairing does not pair this app. Bluetooth proxy devices cannot supply this
 local BlueZ pairing service.
 

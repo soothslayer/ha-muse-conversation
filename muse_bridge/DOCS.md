@@ -41,8 +41,15 @@ A local socket connection only confirms that the bridge is running; the Muse
 session also needs to be connected. A read-only status request is supported:
 `{"operation":"status"}` returns `connected` and `reply_support` booleans.
 
-This is experimental. Automated tests cover reply handling; live HA OS
-Bluetooth pairing and Voice PE playback must be tested on the target host.
+This is experimental. **Raspberry Pi users should use HA OS 18.3 or newer
+for Bluetooth pairing.** HA OS 18.2 uses a kernel with the advertising length
+validation regression discussed in [BlueZ issue 2269](https://github.com/bluez/bluez/issues/2269).
+The kernel source shipped by HA OS 18.3 contains the backward-compatibility
+correction. Setting the advertisement's discoverable flag alone does not fix it.
+
+Voice PE playback through HA TTS has been verified. Live Muse replies still
+need verification. An expired or revoked backup pairing cannot replace fresh
+phone pairing; migration only works while the original refresh token is valid.
 
 ## Migrate an existing gadget
 
