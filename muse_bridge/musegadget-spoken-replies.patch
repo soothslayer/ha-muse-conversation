@@ -149,10 +149,10 @@ index 03da07e..900474b 100644
              (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
-index 0000000..e301991
+index 0000000..8cec49e
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,296 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -192,7 +192,7 @@ index 0000000..e301991
 +        self._pending_bytes = 0
 +        self._roots: set[str] | None = None
 +        self._messages: dict[str, dict] = {}
-+        self._last_seq = 0
++        self._seen_events: set[bytes] = set()
 +        self._last_content = 0.0
 +        self._session_id = session_id
 +        self._device_id = device_id
@@ -314,11 +314,16 @@ index 0000000..e301991
 +                        log.debug("reply nested metadata %s.%s fields=%s fingerprints=%s", label, name, keys, fingerprints)
 +        if event.get("type") != "event":
 +            return
-+        seq = event.get("seq")
-+        if isinstance(seq, int) and seq > 0:
-+            if seq <= self._last_seq:
-+                return
-+            self._last_seq = seq
++        # Status and transcript event sequences are not a shared ordering.
++        # Drop exact replays, rather than discarding lower-numbered events
++        # from another event family (including our user-message anchor).
++        fingerprint = hashlib.sha256(json.dumps(event, sort_keys=True).encode()).digest()
++        if fingerprint in self._seen_events:
++            return
++        if len(self._seen_events) >= 4096:
++            self.fail("Too many Muse events arrived during this reply.")
++            return
++        self._seen_events.add(fingerprint)
 +        if self._roots is None:
 +            self._pending_bytes += size
 +            if self._pending_bytes > MAX_BUFFER_BYTES or len(self._pending) >= 512:
@@ -727,10 +732,10 @@ index 0000000..f4a39bf
 +    assert not server._agent_registered
 diff --git a/linux/tests/test_chat_reply.py b/linux/tests/test_chat_reply.py
 new file mode 100644
-index 0000000..8f5910c
+index 0000000..5cffb09
 --- /dev/null
 +++ b/linux/tests/test_chat_reply.py
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,220 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -853,8 +858,8 @@ index 0000000..8f5910c
 +        with pytest.raises(ConnectionError, match="too long"):
 +            await reply.wait_text()
 +        reply = ChatReply()
-+        for _ in range(513):
-+            feed(reply, event(content="x"))
++        for i in range(513):
++            feed(reply, event(mid=f"message-{i}", content="x"))
 +        with pytest.raises(ConnectionError, match="Too many"):
 +            await reply.wait_text()
 +
@@ -936,6 +941,20 @@ index 0000000..8f5910c
 +             event("delta.message_start", parent=None, session_id="new-side", chat_context={"device_id":"device", "chat_id":"new-side"}),
 +             event("delta.message_done", parent="answer", session_id="new-side", content="First reply"))
 +        assert await asyncio.wait_for(reply.wait_text(), .1) == "First reply"
++    asyncio.run(scenario())
++
++
++def test_status_sequence_does_not_hide_lower_numbered_user_turn(monkeypatch):
++    async def scenario():
++        monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", .001)
++        reply = ChatReply("our-side", "device")
++        reply.bind_ack({"message_id": "user"})
++        feed(reply,
++             {"type":"event", "event":"agent.status", "seq":1000, "payload":{}},
++             {**event("message.user",mid="user",session_id="our-side"),"seq":1},
++             {**event("delta.message_start",parent=None,session_id="our-side",chat_context={"device_id":"device","chat_id":"our-side"}),"seq":2},
++             {**event("delta.message_done",parent="answer",content="Hello again"),"seq":3})
++        assert await asyncio.wait_for(reply.wait_text(), .1) == "Hello again"
 +    asyncio.run(scenario())
 diff --git a/linux/tests/test_link_client.py b/linux/tests/test_link_client.py
 index 1c0fefd..07be248 100644
