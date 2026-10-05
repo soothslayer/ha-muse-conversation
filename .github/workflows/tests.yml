@@ -1,0 +1,43 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  home-assistant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: pip install -r requirements-test.txt
+      - run: pytest -q
+      - run: ruff check .
+  bridge:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - if: matrix.python == '3.9'
+        run: pip install cryptography==3.3.2 websockets==13.1
+      - run: |
+          git clone https://github.com/facebookincubator/muse-gadget-sdk.git /tmp/muse-gadget-sdk
+          cd /tmp/muse-gadget-sdk
+          git checkout 3229892e93c18a768ace42cbe1fe7133f91ca203
+          git apply --check "$GITHUB_WORKSPACE/muse_bridge/musegadget-spoken-replies.patch"
+          git apply "$GITHUB_WORKSPACE/muse_bridge/musegadget-spoken-replies.patch"
+          pip install -e ./linux pytest
+          cd linux
+          pytest -q
+      - run: pytest -q muse_bridge/tests
+  app-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg BUILD_ARCH=amd64 -t muse-bridge:test muse_bridge
+      - run: docker run --rm --entrypoint /opt/venv/bin/python muse-bridge:test -c 'import dbus, gi; import runpy; runpy.run_path("/app/main.py", run_name="validation")'

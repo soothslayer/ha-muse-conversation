@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 import voluptuous as vol
-
-from homeassistant.config_entries import ConfigFlow
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_TOKEN
 from homeassistant.helpers.selector import (
     SelectSelector,
@@ -52,7 +50,7 @@ class MuseConfigFlow(ConfigFlow, domain=DOMAIN):
                         options=[
                             {
                                 "value": TRANSPORT_LOCAL_BRIDGE,
-                                "label": "Local gadget bridge (works today)",
+                                "label": "Muse Bridge app / local bridge",
                             },
                             {
                                 "value": TRANSPORT_API,
@@ -126,8 +124,6 @@ class MuseConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _socket_reachable(self, socket_path: str) -> bool:
         """Check that the musegadget service socket accepts a connection."""
-        if not os.path.exists(socket_path):
-            return False
         try:
             _reader, writer = await asyncio.wait_for(
                 asyncio.open_unix_connection(socket_path), timeout=5
@@ -135,4 +131,5 @@ class MuseConfigFlow(ConfigFlow, domain=DOMAIN):
         except (OSError, asyncio.TimeoutError):
             return False
         writer.close()
+        await writer.wait_closed()
         return True

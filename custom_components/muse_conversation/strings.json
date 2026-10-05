@@ -1,1 +1,34 @@
-{"config":{"abort":{"already_configured":"Muse is already configured."},"error":{"empty_token":"Enter a token to continue.","socket_unreachable":"Can't connect to the musegadget service there. Is it installed, paired, and running on this host?"},"step":{"api_token":{"data":{"token":"API token"},"description":"For a future public Muse chat API. Meta hasn't published one yet, so the token is stored and unused for now.","title":"API token"},"bridge":{"data":{"socket_path":"Service socket path"},"description":"Uses the musegadget service from Meta's Linux gadget SDK, running on this same host. Pair it once with the Muse app (musegadget pair). Messages are posted into your Muse chat. One-way: Muse's replies appear in the Muse app, not in Home Assistant.","title":"Local gadget bridge"},"user":{"data":{"transport":"Transport"},"description":"How should Home Assistant reach Muse?","title":"Connect to Muse"}}}}
+{
+  "config": {
+    "abort": {
+      "already_configured": "Muse is already configured."
+    },
+    "error": {
+      "empty_token": "Enter a token to continue.",
+      "socket_unreachable": "Can't connect to the musegadget service there. Is it installed, paired, and running on this host?"
+    },
+    "step": {
+      "api_token": {
+        "data": {
+          "token": "API token"
+        },
+        "description": "For a future public Muse chat API. Meta hasn't published one yet, so the token is stored and unused for now.",
+        "title": "API token"
+      },
+      "bridge": {
+        "data": {
+          "socket_path": "Service socket path"
+        },
+        "description": "Install and pair the Muse Bridge Home Assistant app first. Its default socket path is filled in below. For a separately installed local musegadget service, enter its socket path instead. Select a text-to-speech engine in your Assist pipeline to hear replies.",
+        "title": "Local gadget bridge"
+      },
+      "user": {
+        "data": {
+          "transport": "Transport"
+        },
+        "description": "How should Home Assistant reach Muse?",
+        "title": "Connect to Muse"
+      }
+    }
+  }
+}
