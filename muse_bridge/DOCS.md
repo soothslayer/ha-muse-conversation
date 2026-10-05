@@ -7,8 +7,9 @@ No separate computer or external TTS relay is needed.
 ## Setup
 
 1. Add this repository to the Home Assistant app store. While this change is
-   in a draft PR, copy this `muse_bridge` folder into `/addons/muse_bridge`,
-   reload the store, and install the local Muse Bridge app.
+   in a draft PR, use
+   `https://github.com/soothslayer/ha-muse-conversation#feat/assist-spoken-replies`
+   as the repository URL, then install Muse Bridge.
 2. Set `sdk_token` in the app configuration to your gadget SDK token from
    https://gadgets.muse.ai. This is distinct from a device pairing token.
 3. Start the app and read its log for the `MuseGadget...` Bluetooth name.
@@ -46,6 +47,8 @@ for Bluetooth pairing.** HA OS 18.2 uses a kernel with the advertising length
 validation regression discussed in [BlueZ issue 2269](https://github.com/bluez/bluez/issues/2269).
 The kernel source shipped by HA OS 18.3 contains the backward-compatibility
 correction. Setting the advertisement's discoverable flag alone does not fix it.
+Upgrading the test Raspberry Pi host from 18.2 to 18.3 restored successful
+GATT registration and Bluetooth advertising with the same bridge version.
 
 Voice PE playback through HA TTS has been verified. Live Muse replies still
 need verification. An expired or revoked backup pairing cannot replace fresh
