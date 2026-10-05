@@ -310,10 +310,10 @@ index d0ee450..131acc7 100644
              if frame.kind == "reset":
                  log.warning("control stream reset: %s", frame.value.reason)
 diff --git a/linux/src/musegadget/service.py b/linux/src/musegadget/service.py
-index e922aa6..c2eda7d 100644
+index e922aa6..52f6010 100644
 --- a/linux/src/musegadget/service.py
 +++ b/linux/src/musegadget/service.py
-@@ -222,15 +222,26 @@ class Service:
+@@ -222,15 +222,31 @@ class Service:
          return server
  
      async def _handle_local(self, reader, writer) -> None:
@@ -327,13 +327,18 @@ index e922aa6..c2eda7d 100644
 -        try:
 +            try:
 +                line = await asyncio.wait_for(reader.readline(), 10)
-+                request_task = asyncio.ensure_future(self._local_request(line))
-+                disconnected = asyncio.ensure_future(reader.read(1))
-+                tasks = [request_task, disconnected]
-+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-+                if request_task not in done:
-+                    return
-+                reply = request_task.result()
++                request = json.loads(line)
++                if isinstance(request, dict) and request.get("wait_for_reply") is True:
++                    request_task = asyncio.ensure_future(self._local_request(line))
++                    disconnected = asyncio.ensure_future(reader.read(1))
++                    tasks = [request_task, disconnected]
++                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
++                    if request_task not in done:
++                        return
++                    reply = request_task.result()
++                else:
++                    # Legacy one-way senders may half-close their write side.
++                    reply = await self._local_request(line)
 +            except Exception as exc:
 +                reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 +            writer.write(json.dumps(reply).encode() + b"\n")
@@ -346,7 +351,7 @@ index e922aa6..c2eda7d 100644
              writer.close()
  
      async def _local_request(self, line: bytes) -> dict:
-@@ -239,6 +250,9 @@ class Service:
+@@ -239,6 +255,9 @@ class Service:
          if not isinstance(message, str) or not message.strip():
              return {"ok": False, "error": "expected {\"message\": \"...\"}"}
          session_id = request.get("session_id")
@@ -356,7 +361,7 @@ index e922aa6..c2eda7d 100644
          if session_id is not None and not (
              isinstance(session_id, str) and _SESSION_ID_RE.fullmatch(session_id)
          ):
-@@ -247,6 +261,8 @@ class Service:
+@@ -247,6 +266,8 @@ class Service:
          if session is None or session.registered_at is None:
              return {"ok": False, "error": "not connected to the Muse"}
          log.info("forwarding a %d-character message to the Muse", len(message))
@@ -627,10 +632,10 @@ index 1c0fefd..2ecb0d9 100644
 +        await task
 +    asyncio.run(scenario())
 diff --git a/linux/tests/test_service.py b/linux/tests/test_service.py
-index 305f9ff..4dcb98f 100644
+index 305f9ff..c10a0fc 100644
 --- a/linux/tests/test_service.py
 +++ b/linux/tests/test_service.py
-@@ -167,3 +167,39 @@ def test_a_rejected_sdk_token_report_keeps_the_pairing(tmp_path, monkeypatch):
+@@ -167,3 +167,53 @@ def test_a_rejected_sdk_token_report_keeps_the_pairing(tmp_path, monkeypatch):
  def test_api_root_uses_api_url_v2_or_the_muse_api():
      assert muse_api.api_root("https://api.example/") == "https://api.example"
      assert muse_api.api_root() == "https://api.muse.ai"
@@ -669,4 +674,18 @@ index 305f9ff..4dcb98f 100644
 +        writer.close()
 +        await writer.wait_closed()
 +        await asyncio.wait_for(cancelled.wait(), 1)
++    run_with_socket(check)
++
++
++def test_legacy_notification_sender_can_half_close():
++    async def check(service, path):
++        service._current = FakeSession()
++        reader, writer = await asyncio.open_unix_connection(str(path))
++        writer.write(b'{"message":"hi"}\n')
++        await writer.drain()
++        writer.write_eof()
++        assert json.loads(await asyncio.wait_for(reader.readline(), 1))["ok"]
++        assert service._current.sent == [("hi", None)]
++        writer.close()
++        await writer.wait_closed()
 +    run_with_socket(check)
