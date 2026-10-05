@@ -1,3 +1,16 @@
+diff --git a/linux/src/musegadget/ble_server.py b/linux/src/musegadget/ble_server.py
+index 03da07e..8d94e8f 100644
+--- a/linux/src/musegadget/ble_server.py
++++ b/linux/src/musegadget/ble_server.py
+@@ -81,6 +81,8 @@ class Advertisement(dbus.service.Object):
+     def properties(self) -> dict:
+         return {
+             "Type": dbus.String("peripheral"),
++            # Request kernel-managed discoverability flags on current BlueZ/Linux.
++            "Discoverable": dbus.Boolean(True),
+             "LocalName": dbus.String(self._local_name),
+             "ServiceUUIDs": dbus.Array([SERVICE_UUID], signature="s"),
+             "ManufacturerData": dbus.Dictionary(
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
 index 0000000..2b4147f

@@ -7,7 +7,9 @@ collects `delta.message_start`, `delta.text_append`, `delta.message_done` and
 
 This is an experimental companion patch, not an upstream release. It is pinned
 to SDK commit `3229892e93c18a768ace42cbe1fe7133f91ca203` and includes regression
-tests. It does not change pairing, Noise cryptography, or firmware.
+tests. It does not change pairing cryptography, Noise cryptography, or firmware.
+The Bluetooth advertisement explicitly requests discoverability for modern
+BlueZ/kernel validation.
 
 ## Build and test
 
