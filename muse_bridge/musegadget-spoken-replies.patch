@@ -1,8 +1,27 @@
 diff --git a/linux/src/musegadget/ble_server.py b/linux/src/musegadget/ble_server.py
-index 03da07e..8d94e8f 100644
+index 03da07e..900474b 100644
 --- a/linux/src/musegadget/ble_server.py
 +++ b/linux/src/musegadget/ble_server.py
-@@ -81,6 +81,8 @@ class Advertisement(dbus.service.Object):
+@@ -26,7 +26,7 @@ import logging
+ import signal
+ import threading
+ import time
+-from typing import Callable
++from collections.abc import Callable
+ 
+ import dbus
+ import dbus.exceptions
+@@ -48,6 +48,9 @@ LE_ADV_MANAGER_IFACE = "org.bluez.LEAdvertisingManager1"
+ LE_ADV_IFACE = "org.bluez.LEAdvertisement1"
+ ADAPTER_IFACE = "org.bluez.Adapter1"
+ DEVICE_IFACE = "org.bluez.Device1"
++AGENT_IFACE = "org.bluez.Agent1"
++AGENT_MANAGER_IFACE = "org.bluez.AgentManager1"
++AGENT_PATH = "/org/musegadget/pairing_agent"
+ 
+ SERVICE_UUID = "7fdd3d1c-38ea-46cf-8b46-314ecf5f240c"
+ RX_UUID = "4d593029-28a2-4a6e-a1f0-3c2d5e8f9b01"
+@@ -81,6 +84,8 @@ class Advertisement(dbus.service.Object):
      def properties(self) -> dict:
          return {
              "Type": dbus.String("peripheral"),
@@ -11,6 +30,123 @@ index 03da07e..8d94e8f 100644
              "LocalName": dbus.String(self._local_name),
              "ServiceUUIDs": dbus.Array([SERVICE_UUID], signature="s"),
              "ManufacturerData": dbus.Dictionary(
+@@ -99,6 +104,45 @@ class Advertisement(dbus.service.Object):
+         log.info("advertisement released by BlueZ")
+ 
+ 
++class PairingRejected(dbus.exceptions.DBusException):
++    _dbus_error_name = "org.bluez.Error.Rejected"
++
++
++class SetupPairingAgent(dbus.service.Object):
++    """Accept iOS bonding only from the current Muse GATT setup peer."""
++
++    def __init__(self, bus, accepts_peer: Callable[[str], bool]) -> None:
++        self._accepts_peer = accepts_peer
++        super().__init__(bus, AGENT_PATH)
++
++    def _authorize(self, device) -> None:
++        if not self._accepts_peer(str(device)):
++            raise PairingRejected("Not the active Muse setup peer")
++        log.info("accepted Bluetooth pairing for active Muse setup peer")
++
++    @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
++    def RequestAuthorization(self, device):
++        self._authorize(device)
++
++    @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
++    def RequestConfirmation(self, device, passkey):
++        self._authorize(device)
++
++    @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
++    def AuthorizeService(self, device, uuid):
++        if str(uuid).lower() != SERVICE_UUID:
++            raise PairingRejected("Not the Muse setup service")
++        self._authorize(device)
++
++    @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
++    def Cancel(self):
++        log.info("Bluetooth pairing request cancelled")
++
++    @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
++    def Release(self):
++        log.info("Bluetooth setup pairing agent released")
++
++
+ class Application(dbus.service.Object):
+     def __init__(self, bus: dbus.SystemBus) -> None:
+         self.services: list[Service] = []
+@@ -217,6 +261,8 @@ class BleServer:
+         self._adapter_path = ""
+         self._saved_adapter: dict = {}
+         self._tx: Characteristic | None = None
++        self._agent = None
++        self._agent_registered = False
+ 
+     # -- Transport --------------------------------------------------------------
+ 
+@@ -241,11 +287,26 @@ class BleServer:
+         bus = self._bus = dbus.SystemBus()
+         self._adapter_path = _find_adapter(bus)
+         adapter = dbus.Interface(bus.get_object(BLUEZ_SERVICE, self._adapter_path), DBUS_PROP_IFACE)
+-        self._saved_adapter = {k: adapter.Get(ADAPTER_IFACE, k) for k in ("Alias", "Pairable")}
++        self._saved_adapter = {
++            k: adapter.Get(ADAPTER_IFACE, k) for k in ("Alias", "PairableTimeout", "Pairable")
++        }
+         adapter.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(True))
+         # The phone reads the GAP name as well as the advertised one.
+         adapter.Set(ADAPTER_IFACE, "Alias", dbus.String(self._local_name))
+-        adapter.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(False))
++        # iOS may bond after its application-level confirmation. Scope the
++        # agent to this setup window and the peer that wrote our GATT RX.
++        self._agent = SetupPairingAgent(bus, self._accepts_pairing_peer)
++        agent_manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE, "/org/bluez"), AGENT_MANAGER_IFACE)
++        try:
++            agent_manager.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
++            self._agent_registered = True
++            agent_manager.RequestDefaultAgent(AGENT_PATH)
++            adapter.Set(ADAPTER_IFACE, "PairableTimeout", dbus.UInt32(600))
++            adapter.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
++        except Exception:
++            self._teardown()
++            raise
++        log.info("iPhone Bluetooth pairing agent ready for the active Muse setup peer")
+ 
+         app = Application(bus)
+         service = Service(bus, 0, SERVICE_UUID)
+@@ -291,6 +352,10 @@ class BleServer:
+ 
+     # -- Internals (GLib thread) ------------------------------------------------
+ 
++    def _accepts_pairing_peer(self, path: str) -> bool:
++        with self._lock:
++            return self._device_path is not None and self._device_path == path
++
+     def _handle_write(self, value: bytes, options: dict) -> None:
+         with self._lock:
+             if "mtu" in options and int(options["mtu"]) != self._mtu:
+@@ -303,7 +368,7 @@ class BleServer:
+     def _handle_device_change(self, interface, changed, invalidated, path=None):
+         if "Connected" in changed:
+             log.info("device %s %s", path, "connected" if changed["Connected"] else "disconnected")
+-        if changed.get("Connected") is False:
++        if "Connected" in changed and not bool(changed["Connected"]):
+             with self._lock:
+                 ours = self._device_path in (None, path)
+                 if ours:
+@@ -330,6 +395,12 @@ class BleServer:
+     def _teardown(self) -> None:
+         bus = self._bus
+         adapter_obj = bus.get_object(BLUEZ_SERVICE, self._adapter_path)
++        if self._agent_registered:
++            try:
++                dbus.Interface(bus.get_object(BLUEZ_SERVICE, "/org/bluez"), AGENT_MANAGER_IFACE).UnregisterAgent(AGENT_PATH)
++            except dbus.exceptions.DBusException:
++                pass
++            self._agent_registered = False
+         for iface, method, path in (
+             (LE_ADV_MANAGER_IFACE, "UnregisterAdvertisement", ADV_PATH),
+             (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
 index 0000000..2b4147f
@@ -405,6 +541,90 @@ index e922aa6..cff1de5 100644
          return await session.send_chat(message, session_id)
  
      async def _sleep(self, seconds: float) -> None:
+diff --git a/linux/tests/test_ble_server.py b/linux/tests/test_ble_server.py
+new file mode 100644
+index 0000000..f4a39bf
+--- /dev/null
++++ b/linux/tests/test_ble_server.py
+@@ -0,0 +1,78 @@
++"""Exercise BlueZ callbacks without a Linux D-Bus installation."""
++import importlib.util
++from pathlib import Path
++from types import ModuleType, SimpleNamespace
++from unittest.mock import Mock
++
++import pytest
++
++
++@pytest.fixture
++def ble(monkeypatch):
++    dbus = ModuleType("dbus")
++    class Object:
++        def __init__(self, *args):
++            pass
++    service = ModuleType("dbus.service")
++    service.Object = Object
++    service.method = service.signal = lambda *a, **k: lambda f: f
++    exceptions = ModuleType("dbus.exceptions")
++    exceptions.DBusException = type("DBusException", (Exception,), {})
++    mainloop = ModuleType("dbus.mainloop")
++    glib = ModuleType("dbus.mainloop.glib")
++    dbus.service, dbus.exceptions, dbus.mainloop = service, exceptions, mainloop
++    mainloop.glib = glib
++    dbus.Boolean = lambda value: int(bool(value))
++    for name, value in {
++        "dbus": dbus, "dbus.service": service, "dbus.exceptions": exceptions,
++        "dbus.mainloop": mainloop, "dbus.mainloop.glib": glib,
++        "gi": ModuleType("gi"), "gi.repository": SimpleNamespace(GLib=Mock()),
++    }.items():
++        monkeypatch.setitem(__import__("sys").modules, name, value)
++    path = Path(__file__).parents[1] / "src/musegadget/ble_server.py"
++    spec = importlib.util.spec_from_file_location("test_bluez_module", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_agent_accepts_only_active_setup_peer(ble):
++    server = ble.BleServer("test", Mock(), Mock())
++    agent = ble.SetupPairingAgent(None, server._accepts_pairing_peer)
++    with pytest.raises(ble.PairingRejected):
++        agent.RequestAuthorization("/phone")
++    server._handle_write(b"test", {"device": "/phone"})
++    agent.RequestAuthorization("/phone")
++    agent.RequestConfirmation("/phone", 123456)
++    agent.AuthorizeService("/phone", ble.SERVICE_UUID)
++    with pytest.raises(ble.PairingRejected):
++        agent.RequestConfirmation("/other", 123456)
++    with pytest.raises(ble.PairingRejected):
++        agent.AuthorizeService("/phone", "unrelated-service")
++
++
++def test_dbus_boolean_disconnect_revokes_peer(ble):
++    disconnect = Mock()
++    server = ble.BleServer("test", Mock(), disconnect)
++    server._handle_write(b"test", {"device": "/phone"})
++    server._handle_device_change(ble.DEVICE_IFACE, {"Connected": 0}, [], path="/other")
++    assert server._accepts_pairing_peer("/phone")
++    disconnect.assert_not_called()
++    server._handle_device_change(ble.DEVICE_IFACE, {"Connected": 0}, [], path="/phone")
++    assert not server._accepts_pairing_peer("/phone")
++    disconnect.assert_called_once()
++
++
++def test_teardown_unregisters_agent_and_restores_adapter(ble):
++    server = ble.BleServer("test", Mock(), Mock())
++    server._bus = Mock()
++    server._adapter_path = "/adapter"
++    server._agent_registered = True
++    server._saved_adapter = {"PairableTimeout": 0, "Pairable": 0}
++    interface = Mock()
++    ble.dbus.Interface = Mock(return_value=interface)
++    server._teardown()
++    interface.UnregisterAgent.assert_called_once_with(ble.AGENT_PATH)
++    interface.Set.assert_any_call(ble.ADAPTER_IFACE, "PairableTimeout", 0)
++    interface.Set.assert_any_call(ble.ADAPTER_IFACE, "Pairable", 0)
++    assert not server._agent_registered
 diff --git a/linux/tests/test_chat_reply.py b/linux/tests/test_chat_reply.py
 new file mode 100644
 index 0000000..a531204

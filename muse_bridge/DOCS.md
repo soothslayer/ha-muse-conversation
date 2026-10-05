@@ -27,6 +27,12 @@ remains enabled. Pairing credentials survive restarts in private `/data`.
 The app publishes only a local Unix socket; it has no HTTP port and cannot
 execute shell/file commands for Muse.
 
+During setup, a temporary BlueZ agent handles iPhone Bluetooth pairing only
+for the peer writing the Muse GATT setup characteristic. It rejects unrelated
+services and devices, does not mark phones trusted, and restores the adapter's
+pairability settings when setup ends. This compatibility change is under live
+validation; discovery alone does not prove that Muse provisioning completed.
+
 For private credential migration, a token file at
 `/share/muse-conversation/sdk_token` is imported into private app data and
 removed after validation on startup. Prefer the password configuration field
