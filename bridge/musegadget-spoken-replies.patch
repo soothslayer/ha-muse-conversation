@@ -1,0 +1,672 @@
+diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
+new file mode 100644
+index 0000000..2b4147f
+--- /dev/null
++++ b/linux/src/musegadget/chat_reply.py
+@@ -0,0 +1,205 @@
++# SPDX-License-Identifier: Apache-2.0
++# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
++
++"""Collect a correlated Muse reply from the firmware's NDJSON subscription.
++
++Only parent-linked messages are accepted. Unattributed account-wide events
++must never become a spoken answer on an unrelated Home Assistant satellite.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import time
++
++MAX_LINE_BYTES = 64 * 1024
++MAX_BUFFER_BYTES = 256 * 1024
++MAX_REPLY_BYTES = 8192
++SETTLE_S = 3.0
++
++
++class ChatReply:
++    """One subscription, opened before posting the user message."""
++
++    def __init__(self) -> None:
++        self.ready = asyncio.Event()
++        self.changed = asyncio.Event()
++        self.error: str | None = None
++        self._buffer = bytearray()
++        self._pending: list[dict] = []
++        self._pending_bytes = 0
++        self._roots: set[str] | None = None
++        self._messages: dict[str, dict] = {}
++        self._last_seq = 0
++        self._last_content = 0.0
++
++    def fail(self, message: str) -> None:
++        self.error = message
++        self.ready.set()
++        self.changed.set()
++
++    def on_frame(self, frame) -> None:
++        if self.error:
++            return
++        if frame.kind == "reset":
++            self.fail("Muse reply subscription was reset.")
++            return
++        if frame.kind == "response":
++            if not 200 <= frame.value.status < 300:
++                self.fail(
++                    f"Muse reply subscription refused: HTTP {frame.value.status}."
++                )
++                return
++            self.ready.set()
++            data, ended = frame.value.body, frame.value.end_body
++        else:
++            data, ended = frame.value.data, frame.value.end_body
++        self._buffer += data
++        while b"\n" in self._buffer and not self.error:
++            raw, _, rest = self._buffer.partition(b"\n")
++            self._buffer = bytearray(rest)
++            if len(raw) > MAX_LINE_BYTES:
++                self.fail("Muse reply event was too large.")
++                return
++            if not raw.strip():
++                continue
++            try:
++                event = json.loads(raw)
++            except (ValueError, UnicodeError):
++                self.fail("Muse sent an invalid reply event.")
++                return
++            if isinstance(event, dict):
++                self._event(event, len(raw))
++        if len(self._buffer) > MAX_LINE_BYTES:
++            self.fail("Muse reply event was too large.")
++        if ended:
++            self.fail("Muse reply subscription closed before the turn completed.")
++
++    def bind_ack(self, response) -> None:
++        """The POST acknowledgment names the parent IDs for this turn."""
++        if isinstance(response, dict) and isinstance(response.get("result"), dict):
++            response = response["result"]
++        if not isinstance(response, dict):
++            response = {}
++        self._roots = {
++            value
++            for key in ("message_id", "reply_to_message_id")
++            if isinstance(value := response.get(key), str) and value
++        }
++        if not self._roots:
++            self.fail(
++                "Muse accepted the message without a message ID; cannot match its reply."
++            )
++            return
++        for event in self._pending:
++            self._content(event)
++        self._pending.clear()
++        self._pending_bytes = 0
++
++    def _event(self, event: dict, size: int) -> None:
++        if event.get("type") != "event":
++            return
++        seq = event.get("seq")
++        if isinstance(seq, int) and seq > 0:
++            if seq <= self._last_seq:
++                return
++            self._last_seq = seq
++        if self._roots is None:
++            self._pending_bytes += size
++            if self._pending_bytes > MAX_BUFFER_BYTES or len(self._pending) >= 512:
++                self.fail(
++                    "Too many Muse events arrived before the delivery acknowledgment."
++                )
++                return
++            self._pending.append(event)
++        else:
++            self._content(event)
++
++    def _content(self, event: dict) -> None:
++        kind = event.get("event")
++        if kind not in {
++            "delta.message_start",
++            "delta.text_append",
++            "delta.message_done",
++            "message.assistant",
++        }:
++            return
++        payload = event.get("payload")
++        if not isinstance(payload, dict):
++            return
++        message_id = (
++            payload.get("message_id") or event.get("message_id") or payload.get("id")
++        )
++        if not isinstance(message_id, str) or not message_id:
++            return
++        parent = payload.get("reply_to_message_id") or payload.get("parent_message_id")
++        if parent and (
++            not isinstance(parent, str)
++            or parent not in self._roots
++            and parent not in self._messages
++        ):
++            return
++        if message_id not in self._messages:
++            if not parent:
++                return
++            if len(self._messages) >= 32:
++                self.fail("Muse returned too many reply messages.")
++                return
++            self._messages[message_id] = {"text": "", "done": False}
++        message = self._messages[message_id]
++        if message["done"]:
++            return
++        if kind == "delta.text_append":
++            text = payload.get("text")
++            if isinstance(text, str):
++                message["text"] += text
++        elif kind in {"delta.message_done", "message.assistant"}:
++            if (
++                kind == "message.assistant"
++                and payload.get("display_text_ready") is False
++            ):
++                return
++            text = payload.get("display_text")
++            if not isinstance(text, str):
++                text = payload.get("content")
++            if isinstance(text, str) and text:
++                message["text"] = text
++            message["done"] = True
++        if (
++            sum(len(m["text"].encode()) for m in self._messages.values())
++            > MAX_REPLY_BYTES
++        ):
++            self.fail("Muse's reply was too long to speak in one turn.")
++            return
++        self._last_content = time.monotonic()
++        self.changed.set()
++
++    async def wait_ready(self) -> None:
++        await self.ready.wait()
++        if self.error:
++            raise ConnectionError(self.error)
++
++    async def wait_text(self) -> str:
++        """No end-of-turn event exists; settle after all messages finish."""
++        while True:
++            self.changed.clear()
++            if self.error:
++                raise ConnectionError(self.error)
++            if self._messages and all(m["done"] for m in self._messages.values()):
++                remaining = SETTLE_S - (time.monotonic() - self._last_content)
++                if remaining <= 0:
++                    text = "\n\n".join(
++                        m["text"].strip()
++                        for m in self._messages.values()
++                        if m["text"].strip()
++                    )
++                    if text:
++                        return text
++                    raise ConnectionError("Muse completed the turn without reply text.")
++                try:
++                    await asyncio.wait_for(self.changed.wait(), remaining)
++                except asyncio.TimeoutError:
++                    pass
++            else:
++                await self.changed.wait()
+diff --git a/linux/src/musegadget/link_client.py b/linux/src/musegadget/link_client.py
+index d0ee450..131acc7 100644
+--- a/linux/src/musegadget/link_client.py
++++ b/linux/src/musegadget/link_client.py
+@@ -41,6 +41,7 @@ from dataclasses import dataclass
+ from typing import Callable
+ from urllib.parse import quote
+ 
++from musegadget.chat_reply import ChatReply
+ from musegadget.muse_api import user_agent
+ from musegadget.noise import Header, NoiseTransport, NoiseXXInitiator
+ 
+@@ -51,6 +52,7 @@ CONTROL_PATH = "/link-control"
+ CHAT_PATH = "/chat/stream"
+ APP_ID = "musegadget"
+ REQUEST_TIMEOUT_S = 60
++REPLY_TIMEOUT_S = 80
+ MAX_RESPONSE_BYTES = 1024 * 1024
+ HANDSHAKE_TIMEOUT_S = 20
+ PING_INTERVAL_S = 20
+@@ -151,6 +153,8 @@ class LinkSession:
+         self._stream_id = 0
+         self._register_id = ""
+         self._requests: dict[int, _Request] = {}
++        self._subscriptions: dict[int, ChatReply] = {}
++        self._reply_lock = asyncio.Lock()
+         self.registered_at: float | None = None
+ 
+     async def run(self, stop: asyncio.Event) -> Outcome:
+@@ -172,6 +176,9 @@ class LinkSession:
+             stopper.cancel()
+             return reader.result()
+         finally:
++            for subscription in self._subscriptions.values():
++                subscription.fail("Muse disconnected while waiting for its reply.")
++            self._subscriptions.clear()
+             for task in self._tasks:
+                 task.cancel()
+             for request in self._requests.values():
+@@ -274,6 +281,48 @@ class LinkSession:
+ 
+     # -- Sending --------------------------------------------------------------
+ 
++    async def send_chat_and_wait(self, message: str, session_id: str | None = None) -> dict:
++        """Subscribe before sending, then return correlated text for Assist.
++
++        The overall deadline includes subscription setup and the delivery ack.
++        A second voice turn fails promptly rather than building a stale queue.
++        Legacy send_chat remains acknowledgment-only for notifications.
++        """
++        if self._reply_lock.locked():
++            return {"ok": False, "error": "Muse is answering another voice request. Try again shortly."}
++        async with self._reply_lock:
++            try:
++                return await asyncio.wait_for(self._chat_reply(message, session_id), REPLY_TIMEOUT_S)
++            except asyncio.TimeoutError:
++                return {"ok": False, "error": "Timed out waiting for Muse's reply; the message may have been delivered."}
++            except (ConnectionError, ValueError) as exc:
++                return {"ok": False, "error": str(exc)}
++
++    async def _chat_reply(self, message: str, session_id: str | None) -> dict:
++        subscription = ChatReply()
++        encrypted = self._transport.encrypt_http_request(
++            "POST", "/chat/subscribe", b"{}",
++            headers=[Header("Content-Type", "application/json"),
++                     Header("Accept", "application/x-ndjson")],
++        )
++        stream_id = encrypted.stream_id
++        self._subscriptions[stream_id] = subscription
++        try:
++            await self._send_frames(encrypted.frames)
++            await asyncio.wait_for(subscription.wait_ready(), 10)
++            ack = await self.send_chat(message, session_id)
++            if not ack["ok"]:
++                return ack
++            subscription.bind_ack(ack.get("response"))
++            return {**ack, "reply": await subscription.wait_text()}
++        finally:
++            # If the session already ended, its cleanup removed the stream.
++            if self._subscriptions.pop(stream_id, None) is not None:
++                try:
++                    await self._send_frames(self._transport.encrypt_reset(stream_id))
++                except Exception:
++                    log.debug("could not close Muse reply subscription")
++
+     async def send(self, message: dict) -> None:
+         frames = self._transport.encrypt_body_chunk(self._stream_id, encode_message(message))
+         await self._send_frames(frames)
+@@ -300,7 +349,10 @@ class LinkSession:
+             if frame is None:
+                 continue
+             if frame.stream_id != self._stream_id:
+-                self._requests.get(frame.stream_id, _NO_REQUEST).on_frame(frame)
++                receiver = self._subscriptions.get(frame.stream_id)
++                if receiver is None:
++                    receiver = self._requests.get(frame.stream_id, _NO_REQUEST)
++                receiver.on_frame(frame)
+                 continue
+             if frame.kind == "reset":
+                 log.warning("control stream reset: %s", frame.value.reason)
+diff --git a/linux/src/musegadget/service.py b/linux/src/musegadget/service.py
+index e922aa6..c2eda7d 100644
+--- a/linux/src/musegadget/service.py
++++ b/linux/src/musegadget/service.py
+@@ -222,15 +222,26 @@ class Service:
+         return server
+ 
+     async def _handle_local(self, reader, writer) -> None:
++        tasks = []
+         try:
+-            line = await asyncio.wait_for(reader.readline(), 10)
+-            reply = await self._local_request(line)
+-        except Exception as exc:
+-            reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+-        writer.write(json.dumps(reply).encode() + b"\n")
+-        try:
++            try:
++                line = await asyncio.wait_for(reader.readline(), 10)
++                request_task = asyncio.ensure_future(self._local_request(line))
++                disconnected = asyncio.ensure_future(reader.read(1))
++                tasks = [request_task, disconnected]
++                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
++                if request_task not in done:
++                    return
++                reply = request_task.result()
++            except Exception as exc:
++                reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
++            writer.write(json.dumps(reply).encode() + b"\n")
+             await writer.drain()
+         finally:
++            for task in tasks:
++                if not task.done():
++                    task.cancel()
++            await asyncio.gather(*tasks, return_exceptions=True)
+             writer.close()
+ 
+     async def _local_request(self, line: bytes) -> dict:
+@@ -239,6 +250,9 @@ class Service:
+         if not isinstance(message, str) or not message.strip():
+             return {"ok": False, "error": "expected {\"message\": \"...\"}"}
+         session_id = request.get("session_id")
++        wait_for_reply = request.get("wait_for_reply", False)
++        if not isinstance(wait_for_reply, bool):
++            return {"ok": False, "error": "wait_for_reply must be a boolean"}
+         if session_id is not None and not (
+             isinstance(session_id, str) and _SESSION_ID_RE.fullmatch(session_id)
+         ):
+@@ -247,6 +261,8 @@ class Service:
+         if session is None or session.registered_at is None:
+             return {"ok": False, "error": "not connected to the Muse"}
+         log.info("forwarding a %d-character message to the Muse", len(message))
++        if wait_for_reply:
++            return await session.send_chat_and_wait(message, session_id)
+         return await session.send_chat(message, session_id)
+ 
+     async def _sleep(self, seconds: float) -> None:
+diff --git a/linux/tests/test_chat_reply.py b/linux/tests/test_chat_reply.py
+new file mode 100644
+index 0000000..a531204
+--- /dev/null
++++ b/linux/tests/test_chat_reply.py
+@@ -0,0 +1,153 @@
++# SPDX-License-Identifier: Apache-2.0
++# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
++
++"""Reply framing, correlation and completion without account credentials."""
++
++import asyncio
++import json
++
++import pytest
++from musegadget.chat_reply import ChatReply
++from musegadget.noise import ApplicationResponse, BodyChunk, ServiceFrame
++
++
++def event(kind="message.assistant", mid="answer", parent="user", **payload):
++    return {
++        "type": "event",
++        "event": kind,
++        "payload": {"message_id": mid, "reply_to_message_id": parent, **payload},
++    }
++
++
++def feed(reply, *events):
++    reply.on_frame(
++        ServiceFrame.body_chunk(
++            1, BodyChunk(data=b"".join(json.dumps(e).encode() + b"\n" for e in events))
++        )
++    )
++
++
++def answer(reply, monkeypatch):
++    monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", 0.001)
++    return asyncio.run(asyncio.wait_for(reply.wait_text(), 0.1))
++
++
++def test_pre_ack_events_fragments_duplicates_and_final_text(monkeypatch):
++    async def scenario():
++        reply = ChatReply()
++        events = [
++            event("delta.message_start"),
++            event("delta.text_append", parent=None, text="Part"),
++            event("delta.message_done", parent=None, display_text="Full answer café"),
++        ]
++        data = b"".join(
++            json.dumps(e, ensure_ascii=False).encode() + b"\n" for e in events
++        )
++        for byte in data:
++            reply.on_frame(ServiceFrame.body_chunk(1, BodyChunk(data=bytes([byte]))))
++        reply.bind_ack({"result": {"message_id": "user"}})
++        feed(reply, event(content="duplicate"))
++        assert await asyncio.wait_for(reply.wait_text(), 0.1) == "Full answer café"
++
++    monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", 0.001)
++    asyncio.run(scenario())
++
++
++def test_unrelated_and_unattributed_messages_never_spoken(monkeypatch):
++    async def scenario():
++        reply = ChatReply()
++        feed(
++            reply,
++            event(mid="bad", parent="other-user", content="Private"),
++            event(mid="unknown", parent=None, content="Private"),
++        )
++        reply.bind_ack({"message_id": "user"})
++        feed(
++            reply,
++            event("delta.text_append", mid="bad", parent=None, text="Still private"),
++            event(mid="ok", content="Correct"),
++            event(mid="followup", parent="ok", content="Second message"),
++        )
++        assert (
++            await asyncio.wait_for(reply.wait_text(), 0.1)
++            == "Correct\n\nSecond message"
++        )
++
++    monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", 0.001)
++    asyncio.run(scenario())
++
++
++def test_sequence_replay_does_not_duplicate_deltas(monkeypatch):
++    async def scenario():
++        reply = ChatReply()
++        reply.bind_ack({"message_id": "user"})
++        start = {**event("delta.message_start"), "seq": 1}
++        delta = {**event("delta.text_append", text="Hello"), "seq": 2}
++        feed(reply, start, delta, delta, {**event("delta.message_done"), "seq": 3})
++        assert await asyncio.wait_for(reply.wait_text(), 0.1) == "Hello"
++
++    monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", 0.001)
++    asyncio.run(scenario())
++
++
++@pytest.mark.parametrize("ack", [None, [], {"accepted": True}])
++def test_missing_ack_identity_fails(ack):
++    async def scenario():
++        reply = ChatReply()
++        reply.bind_ack(ack)
++        with pytest.raises(ConnectionError, match="message ID"):
++            await reply.wait_text()
++
++    asyncio.run(scenario())
++
++
++@pytest.mark.parametrize("data", [b"not-json\n", b"\xff\n", b"x" * 65537])
++def test_bad_ndjson_fails(data):
++    async def scenario():
++        reply = ChatReply()
++        reply.on_frame(ServiceFrame.body_chunk(1, BodyChunk(data=data)))
++        with pytest.raises(ConnectionError):
++            await reply.wait_text()
++
++    asyncio.run(scenario())
++
++
++def test_reply_limit_and_pre_ack_buffer_are_bounded():
++    async def scenario():
++        reply = ChatReply()
++        reply.bind_ack({"message_id": "user"})
++        feed(reply, event(content="x" * 8193))
++        with pytest.raises(ConnectionError, match="too long"):
++            await reply.wait_text()
++        reply = ChatReply()
++        for _ in range(513):
++            feed(reply, event(content="x"))
++        with pytest.raises(ConnectionError, match="Too many"):
++            await reply.wait_text()
++
++    asyncio.run(scenario())
++
++
++def test_unfinished_reply_waits_and_subscription_failure_wakes_waiter():
++    async def scenario():
++        reply = ChatReply()
++        reply.bind_ack({"message_id": "user"})
++        feed(reply, event("delta.text_append", text="Partial"))
++        task = asyncio.create_task(reply.wait_text())
++        await asyncio.sleep(0.01)
++        assert not task.done()
++        reply.fail("disconnected")
++        with pytest.raises(ConnectionError, match="disconnected"):
++            await task
++
++    asyncio.run(scenario())
++
++
++def test_subscription_rejection_before_send():
++    async def scenario():
++        reply = ChatReply()
++        reply.on_frame(ServiceFrame.response(1, ApplicationResponse(status=403)))
++        with pytest.raises(ConnectionError, match="HTTP 403"):
++            await reply.wait_ready()
++
++    asyncio.run(scenario())
+diff --git a/linux/tests/test_link_client.py b/linux/tests/test_link_client.py
+index 1c0fefd..2ecb0d9 100644
+--- a/linux/tests/test_link_client.py
++++ b/linux/tests/test_link_client.py
+@@ -273,3 +273,97 @@ def test_describe_result(result, described):
+ def test_printable_replaces_control_characters():
+     assert printable("system.run") == "system.run"
+     assert printable("a\nb\x1b[2Jc") == "a?b?[2Jc"
++
++
++def test_spoken_reply_uses_subscription_on_encrypted_session(monkeypatch):
++    monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", .01)
++    async def scenario():
++        session, vm = make_session(lambda *a: {"ok": True}, [])
++        stop = asyncio.Event()
++        task = asyncio.create_task(session.run(stop))
++        await vm.handshake()
++        await vm.accept_control_stream()
++        await vm.next_message()
++        reply = asyncio.create_task(session.send_chat_and_wait("Hello", "ha-side"))
++        sub = await vm.next_frame()
++        assert sub.value.path == "/chat/subscribe"
++        await vm.send_frame(ServiceFrame.response(sub.stream_id, ApplicationResponse(status=200)))
++        request = await vm.next_frame()
++        assert request.value.path == "/chat/stream"
++        assert json.loads(request.value.body)["session_id"] == "ha-side"
++        busy = await session.send_chat_and_wait("Another", "other-side")
++        assert not busy["ok"] and "another voice request" in busy["error"]
++        # Subscription events can arrive before the delivery acknowledgment.
++        events = [
++            {"type": "event", "event": "message.assistant", "payload": {
++                "message_id": "bad", "parent_message_id": "other", "content": "Private"}},
++            {"type": "event", "event": "message.assistant", "payload": {
++                "message_id": "answer", "parent_message_id": "user", "content": "Hello back!"}},
++        ]
++        await vm.send_frame(ServiceFrame.body_chunk(sub.stream_id, BodyChunk(
++            data=b"".join(json.dumps(e).encode() + b"\n" for e in events))))
++        await vm.send_frame(ServiceFrame.response(request.stream_id, ApplicationResponse(
++            status=200, body=b'{"message_id":"user"}', end_body=True)))
++        result = await asyncio.wait_for(reply, 2)
++        assert result["reply"] == "Hello back!"
++        assert (await vm.next_frame()).kind == "reset"
++        assert not session._subscriptions
++        stop.set()
++        await task
++    asyncio.run(scenario())
++
++
++def test_reply_subscription_is_removed_on_cancellation():
++    async def scenario():
++        session, vm = make_session(lambda *a: {"ok": True}, [])
++        stop = asyncio.Event()
++        task = asyncio.create_task(session.run(stop))
++        await vm.handshake()
++        await vm.accept_control_stream()
++        await vm.next_message()
++        reply = asyncio.create_task(session.send_chat_and_wait("Hello"))
++        sub = await vm.next_frame()
++        reply.cancel()
++        with pytest.raises(asyncio.CancelledError):
++            await reply
++        reset = await vm.next_frame()
++        assert reset.kind == "reset" and reset.stream_id == sub.stream_id
++        assert not session._subscriptions and not session._reply_lock.locked()
++        stop.set()
++        await task
++    asyncio.run(scenario())
++
++
++@pytest.mark.parametrize("failure", ["timeout", "disconnect", "refused"])
++def test_reply_wait_failure_cleans_up_and_releases_busy_state(monkeypatch, failure):
++    monkeypatch.setattr("musegadget.link_client.REPLY_TIMEOUT_S", .1)
++    async def scenario():
++        session, vm = make_session(lambda *a: {"ok": True}, [])
++        stop = asyncio.Event()
++        task = asyncio.create_task(session.run(stop))
++        await vm.handshake()
++        await vm.accept_control_stream()
++        await vm.next_message()
++        reply = asyncio.create_task(session.send_chat_and_wait("Hello"))
++        sub = await vm.next_frame()
++        if failure == "refused":
++            await vm.send_frame(ServiceFrame.response(sub.stream_id, ApplicationResponse(status=403)))
++        else:
++            await vm.send_frame(ServiceFrame.response(sub.stream_id, ApplicationResponse(status=200)))
++            request = await vm.next_frame()
++            await vm.send_frame(ServiceFrame.response(request.stream_id, ApplicationResponse(
++                status=200, body=b'{"message_id":"user"}', end_body=True)))
++            if failure == "disconnect":
++                await vm.ws.close()
++        result = await asyncio.wait_for(reply, 2)
++        assert not result["ok"]
++        assert not session._subscriptions and not session._reply_lock.locked()
++        if failure == "refused":
++            assert "403" in result["error"]
++        elif failure == "timeout":
++            assert "Timed out" in result["error"]
++        else:
++            assert "disconnected" in result["error"]
++        stop.set()
++        await task
++    asyncio.run(scenario())
+diff --git a/linux/tests/test_service.py b/linux/tests/test_service.py
+index 305f9ff..4dcb98f 100644
+--- a/linux/tests/test_service.py
++++ b/linux/tests/test_service.py
+@@ -167,3 +167,39 @@ def test_a_rejected_sdk_token_report_keeps_the_pairing(tmp_path, monkeypatch):
+ def test_api_root_uses_api_url_v2_or_the_muse_api():
+     assert muse_api.api_root("https://api.example/") == "https://api.example"
+     assert muse_api.api_root() == "https://api.muse.ai"
++
++
++def test_local_request_waits_for_reply_only_when_requested():
++    class ReplySession(FakeSession):
++        async def send_chat_and_wait(self, message, session_id=None):
++            self.sent.append((message, session_id, "reply"))
++            return {"ok": True, "reply": "Hello!"}
++    async def check(service, path):
++        service._current = ReplySession()
++        result = await ask(path, b'{"message":"hi","session_id":"ha-1","wait_for_reply":true}\n')
++        assert result == {"ok": True, "reply": "Hello!"}
++        assert service._current.sent == [("hi", "ha-1", "reply")]
++        result = await ask(path, b'{"message":"hi","wait_for_reply":"true"}\n')
++        assert not result["ok"]
++    run_with_socket(check)
++
++
++def test_disconnect_cancels_local_voice_request():
++    async def check(service, path):
++        started, cancelled = asyncio.Event(), asyncio.Event()
++        class Session(FakeSession):
++            async def send_chat_and_wait(self, *args):
++                started.set()
++                try:
++                    await asyncio.Event().wait()
++                finally:
++                    cancelled.set()
++        service._current = Session()
++        reader, writer = await asyncio.open_unix_connection(str(path))
++        writer.write(b'{"message":"hi","wait_for_reply":true}\n')
++        await writer.drain()
++        await asyncio.wait_for(started.wait(), 1)
++        writer.close()
++        await writer.wait_closed()
++        await asyncio.wait_for(cancelled.wait(), 1)
++    run_with_socket(check)

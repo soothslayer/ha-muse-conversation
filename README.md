@@ -1,76 +1,71 @@
 # Muse Conversation for Home Assistant
 
-A custom Home Assistant integration that connects **Muse** (Meta's AI agent)
-to Home Assistant: send Muse messages from automations, and pick Muse as a
-conversation agent.
+Use Muse as the conversation agent in a Home Assistant Assist pipeline. Assist
+sends the transcript to Muse, receives its answer, and uses the pipeline's TTS
+engine (for example, local Piper) to speak it on a Voice Preview Edition.
 
-## How it works (and its limits)
+**Spoken replies are experimental and require the companion Linux bridge patch.**
+The code is tested with simulated Muse events and Home Assistant 2026.9.4; live
+Muse replies and Voice PE playback still need verification. The unmodified Linux
+SDK only acknowledges delivery, so updating this integration alone is insufficient.
 
-Meta has not published a public HTTP chat API for Muse, so this integration
-uses the **local gadget bridge**: Meta's open-source Linux gadget SDK
-([muse-gadget-sdk](https://github.com/facebookincubator/muse-gadget-sdk))
-running as a service on the same host as Home Assistant. The service holds
-your paired, encrypted session to Muse; this integration hands it messages
-over a local Unix socket and it posts them into your Muse chat.
+## What carries over from voice-ai
 
-**This is one-way.** The SDK's chat endpoint returns a delivery ack, not the
-reply. Muse's answer appears in the Muse app, not back in Home Assistant.
-So:
+The working [voice-pe-spoken-replies branch](https://github.com/soothslayer/voice-ai/tree/voice-pe-spoken-replies)
+adds Piper playback to Muse's ESP32 firmware. Its reply text comes from Muse's
+`/chat/subscribe` stream over the paired, encrypted gadget connection.
 
-- `notify.muse` from automations/scripts: **works today**. "The garage
-  door's been open an hour" lands in your Muse chat.
-- Conversation entity / voice assistant: accepts what you say, delivers it
-  to Muse, and replies "Sent to Muse." The actual answer comes back in the
-  app. True two-way voice (ask through a satellite, hear the answer back)
-  needs Meta to open a reply channel.
+This integration uses that same reply protocol in the Linux bridge. The flow is:
 
-The transport is isolated in `muse_client.py`. If Meta ever documents a real
-chat API, that's the one file that changes.
+```text
+Voice PE with Home Assistant firmware
+  -> Assist speech-to-text
+  -> Muse Conversation
+  -> patched musegadget Unix socket
+  -> Muse /chat/stream + /chat/subscribe over the paired Noise session
+  -> answer text -> Assist TTS (Piper) -> Voice PE speaker
+```
 
-## Prerequisites (bridge)
+Home Assistant supplies TTS and playback, so the custom ESP32 speech patch and
+`voice-ai` HTTP TTS server are not needed for this route. A Voice PE still running
+Muse firmware is not an Assist satellite: restore its Home Assistant firmware and
+connect it to HA before using this pipeline. See the
+[official Voice PE recovery guide](https://support.nabucasa.com/hc/en-us/articles/25800241218717-Reinstalling-the-firmware).
 
-On the Linux host that runs Home Assistant (needs Bluetooth for pairing):
+## Bridge prerequisite
 
-1. Install the gadget SDK service:
-   ```sh
-   git clone https://github.com/facebookincubator/muse-gadget-sdk
-   cd muse-gadget-sdk/linux
-   bash install.sh
-   ```
-2. Pair it once: `sudo musegadget pair`, then add the device in the Muse
-   app (Settings > Devices, Developer mode on).
-3. Verify delivery:
-   ```sh
-   echo "hello from Home Assistant" | musegadget send-user-msg
-   # -> "Sent to your Muse." (check the app)
-   ```
+Follow [bridge/README.md](bridge/README.md) to install the patched, paired Linux
+`musegadget` service. The default socket is `/run/musegadget/musegadget.sock`.
+Home Assistant's process must have permission to connect to that socket.
 
-The service socket defaults to `/run/musegadget/musegadget.sock`. It must be
-reachable from Home Assistant, so the service has to run on the same machine.
+For Home Assistant Container, mount the **socket directory** into the container
+and give the HA process the service socket's group permissions. Mount the directory
+rather than the socket file so service restarts do not leave a stale mount.
+This repository does not yet supply a Home Assistant OS add-on or a remote HTTP
+bridge. An unrelated Linux machine's Unix socket is not reachable from HA over
+its LAN IP; HA OS users need bridge packaging that exposes the socket to HA Core.
 
-## Install
+## Install and configure
 
-### Via HACS (once published)
+1. Copy `custom_components/muse_conversation` into your HA `custom_components`
+   directory (or install this repository as a HACS custom integration) and restart HA.
+2. Under **Settings > Devices & services**, add **Muse Conversation**, select
+   **Local gadget bridge**, and enter the accessible socket path. Existing local
+   bridge entries keep their configuration; restart HA after updating the files.
+3. Under **Settings > Voice assistants**, create or edit an Assist pipeline:
+   select your speech-to-text engine, **Muse** as the conversation agent, and
+   **Piper** (or another installed TTS engine) as text-to-speech.
+4. Assign that pipeline to the Voice PE running Home Assistant firmware.
+5. First test Muse through the Assist text UI, then ask through the Voice PE.
+   A successful test returns Muse's actual answer, not “Sent to Muse.”
 
-Add this repo as a custom repository in HACS, install "Muse Conversation",
-restart Home Assistant.
+The **Direct API token** option remains a nonfunctional placeholder, preserved
+for existing entries. Device pairing tokens are not public chat API keys.
 
-### Manual
+## Notifications
 
-Copy `custom_components/muse_conversation` into your Home Assistant
-`custom_components` directory and restart.
-
-Then **Settings > Devices & Services > Add Integration**, search for
-"Muse Conversation", and choose:
-
-- **Local gadget bridge (works today)** — enter the service socket path
-  (the default is usually right). The flow checks the socket is reachable.
-- **Direct API token (not yet available)** — stores a token for a future
-  public Muse API. Currently a stub.
-
-## Usage
-
-**Notify service** (`notify.muse`) in automations and scripts:
+Notifications remain acknowledgment-only and do not wait for a reply or speak it.
+The documented `notify.muse` action is retained for the local bridge:
 
 ```yaml
 action: notify.muse
@@ -78,8 +73,8 @@ data:
   message: "The garage door has been open for an hour."
 ```
 
-Target a side chat with `data.session_id` (letters, digits, dashes, up to 64
-chars) or `target`:
+Use `data.session_id` or `target` to choose a Muse side chat (letters, digits and
+dashes, at most 64 characters):
 
 ```yaml
 action: notify.muse
@@ -89,31 +84,54 @@ data:
     session_id: "daily-brief"
 ```
 
-**Conversation agent:** pick **Muse** under **Settings > Voice assistants**.
-Spoken input is delivered to your Muse chat; you'll hear "Sent to Muse."
-back, and the reply appears in the app.
+The integration also supplies a native notification entity, normally `notify.muse`,
+for main-chat delivery using `notify.send_message`:
 
-## Layout
-
-```
-custom_components/muse_conversation/
-├── __init__.py        # config entry setup / unload
-├── manifest.json      # integration metadata
-├── config_flow.py     # transport choice + socket/token setup
-├── conversation.py    # ConversationEntity (one-way delivery)
-├── notify.py          # notify.muse service
-├── muse_client.py     # transports: LocalBridgeMuseClient, StubMuseClient
-├── const.py
-├── strings.json
-└── translations/en.json
+```yaml
+action: notify.send_message
+target:
+  entity_id: notify.muse
+data:
+  title: Garage
+  message: "The door is open."
 ```
 
-## Notes
+## Behavior and limits
 
-- Your Home Assistant fork at `~/git/home-assistant-core` is stale (it sits
-  at 0.116, from 2020). This integration targets the modern conversation
-  entity API, so develop against a current checkout or just drop it into
-  your running HA.
-- Failures surface as spoken replies / service errors instead of silence.
-- `iot_class` is `cloud_polling`; the bridge itself holds a persistent
-  session via the musegadget service.
+- Each HA chat maps to a stable Muse side-chat ID. Follow-up messages in that HA
+  chat reuse it; unrelated HA chats get separate IDs.
+- The bridge subscribes before posting, buffers events received before the
+  delivery acknowledgment, and only accepts messages linked to the acknowledged
+  user message or to an already accepted assistant message. Unattributed events
+  are ignored. If your Muse server omits parent IDs, the request will time out
+  instead of speaking another chat's answer. Live protocol compatibility remains
+  to be verified.
+- Muse has no explicit end-of-turn event in the SDK protocol. After all accepted
+  messages finish, the bridge waits for three seconds of quiet. A later message
+  after this window is not included. The total bridge deadline is 80 seconds;
+  HA's socket deadline is 90 seconds. Long-running tasks can exceed either the
+  bridge deadline or the Assist pipeline's own deadline.
+- Only one voice request is active per bridge. A concurrent request gets a spoken
+  busy error. Notifications can still be delivered while a voice reply is pending.
+- Closing the HA socket cancels the local reply wait and subscription; it does
+  not undo the message already delivered to Muse or stop remote work.
+- Answers are bounded to 8 KiB of UTF-8 text. Oversized, incomplete, missing or
+  malformed responses become spoken errors. The old acknowledgment-only bridge
+  produces an instruction to install the patch rather than a false answer.
+- This adds Muse conversation replies, not native HA entity/tool control. It does
+  not advertise the conversation `CONTROL` feature.
+
+## Development
+
+Python 3.14, tested against Home Assistant 2026.9.4:
+
+```sh
+python3.14 -m venv .venv
+.venv/bin/pip install -r requirements-test.txt
+.venv/bin/pytest -q
+.venv/bin/ruff check .
+```
+
+The tests use real HA response/chat-log classes and local Unix sockets, without
+Muse credentials. The bridge patch includes additional tests plus a real Noise
+handshake against a simulated VM; see [bridge/README.md](bridge/README.md).

@@ -1,27 +1,4 @@
-"""Transport layer between Home Assistant and Muse.
-
-Status as of October 2026: Meta has NOT published a public HTTP chat API for
-Muse. The open-source gadget SDK (facebookincubator/muse-gadget-sdk) pairs
-devices with the Muse app over Bluetooth; its mgst_... tokens are device
-pairing tokens, not chat API keys.
-
-MuseClient isolates the transport behind one interface so the Home Assistant
-plumbing (config flow, conversation entity, notify service) stays stable
-while the last mile is worked out. Two transports ship:
-
-- LocalBridgeMuseClient (works today): talks to the Linux gadget SDK's
-  musegadget service over its local Unix socket. The service holds the
-  paired, encrypted session to your Muse; we hand it {"message": ...}
-  and it POSTs into your Muse chat. This is ONE-WAY: the SDK's
-  /chat/stream returns a delivery ack ({"accepted": true}), not
-  the reply. Muse's answer lands in the Muse app, not back in Home
-  Assistant.
-- StubMuseClient: placeholder for a future public HTTP API. Fails loudly
-  instead of pretending to call an endpoint that doesn't exist.
-
-Do not invent an endpoint. When Meta documents one, add HttpMuseClient here;
-nothing else needs to change.
-"""
+"""Local Muse bridge transport; conversations wait for text, notifications for delivery."""
 
 from __future__ import annotations
 
@@ -31,7 +8,9 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any
 
-from .const import CONF_SOCKET_PATH, CONF_TOKEN, DEFAULT_SOCKET_PATH, TRANSPORT_LOCAL_BRIDGE
+from homeassistant.const import CONF_TOKEN
+
+from .const import CONF_SOCKET_PATH, DEFAULT_SOCKET_PATH, TRANSPORT_LOCAL_BRIDGE
 
 
 class MuseAPIError(Exception):
@@ -47,7 +26,7 @@ class MuseClient(ABC):
 
     @abstractmethod
     async def async_send_message(
-        self, text: str, conversation_id: str | None
+        self, text: str, conversation_id: str | None, *, wait_for_reply: bool = False
     ) -> str:
         """Send a message to Muse and return what to tell the user."""
 
@@ -55,7 +34,7 @@ class MuseClient(ABC):
 # Matches the gadget SDK's session-id rule (service.py: _SESSION_ID_RE).
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
-# The service waits up to 60s for the VM; the CLI gives the socket 90s.
+# Reply-enabled bridges have an 80s overall deadline; leave time for cleanup.
 SOCKET_TIMEOUT_S = 90
 
 # service.py: MAX_LOCAL_REQUEST = 64 * 1024.
@@ -67,7 +46,7 @@ class LocalBridgeMuseClient(MuseClient):
 
     The service must be installed, paired (musegadget pair), and running
     on the same host as Home Assistant. Messages are posted into your Muse
-    chat; replies appear in the Muse app, not here (one-way).
+    chat. The companion SDK patch returns reply text when requested.
     """
 
     def __init__(self, socket_path: str = DEFAULT_SOCKET_PATH) -> None:
@@ -81,16 +60,22 @@ class LocalBridgeMuseClient(MuseClient):
         return None
 
     async def async_send_message(
-        self, text: str, conversation_id: str | None
+        self, text: str, conversation_id: str | None, *, wait_for_reply: bool = False
     ) -> str:
-        """Hand the message to the musegadget service and confirm delivery."""
+        """Send a message and optionally wait for Muse's answer."""
         message = text.strip()
         if not message:
             raise MuseAPIError("Nothing to send: the message was empty.")
         payload: dict[str, Any] = {"message": message}
         session_id = self._session_id(conversation_id)
+        if conversation_id and session_id is None:
+            raise MuseAPIError(
+                "Invalid Muse conversation ID: use letters, digits and dashes (up to 64)."
+            )
         if session_id:
             payload["session_id"] = session_id
+        if wait_for_reply:
+            payload["wait_for_reply"] = True
         line = (json.dumps(payload) + "\n").encode()
         if len(line) > MAX_MESSAGE_BYTES:
             raise MuseAPIError(
@@ -108,33 +93,48 @@ class LocalBridgeMuseClient(MuseClient):
                 f"{err}. Is the service installed, paired, and running on this host?"
             ) from err
         try:
-            writer.write(line)
-            await writer.drain()
-            raw = await asyncio.wait_for(reader.readline(), timeout=SOCKET_TIMEOUT_S)
+            async with asyncio.timeout(SOCKET_TIMEOUT_S):
+                writer.write(line)
+                await writer.drain()
+                raw = await reader.readline()
         except asyncio.TimeoutError as err:
             raise MuseAPIError(
-                "Timed out waiting for the musegadget service to deliver the message."
+                "Timed out waiting for Muse. The message may have been delivered."
             ) from err
-        except OSError as err:
+        except (OSError, ValueError) as err:
             raise MuseAPIError(
                 f"Lost connection to the musegadget service: {err}"
             ) from err
         finally:
             writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=1)
+            except (OSError, asyncio.TimeoutError):
+                pass
         if not raw:
             raise MuseAPIError(
                 "The musegadget service closed the connection without a reply."
             )
         try:
             reply: dict[str, Any] = json.loads(raw)
-        except json.JSONDecodeError as err:
+        except (ValueError, UnicodeError) as err:
             raise MuseAPIError(
                 f"Unparseable reply from the musegadget service: {err}"
             ) from err
-        if not reply.get("ok"):
+        if not isinstance(reply, dict):
+            raise MuseAPIError("The musegadget service returned an invalid response.")
+        if reply.get("ok") is not True:
             raise MuseAPIError(
-                f"Muse did not accept the message: {reply.get('error') or reply}"
+                f"Muse request failed: {reply.get('error') or 'bridge rejected the request'}"
             )
+        if wait_for_reply:
+            text_reply = reply.get("reply")
+            if not isinstance(text_reply, str) or not text_reply.strip():
+                raise MuseAPIError(
+                    "The bridge delivered the message but returned no answer. "
+                    "Install the Muse spoken-replies bridge patch to enable Assist replies."
+                )
+            return text_reply.strip()
         return "Sent to Muse."
 
 
@@ -142,7 +142,7 @@ class StubMuseClient(MuseClient):
     """Placeholder client until a public Muse chat API exists."""
 
     async def async_send_message(
-        self, text: str, conversation_id: str | None
+        self, text: str, conversation_id: str | None, *, wait_for_reply: bool = False
     ) -> str:
         """Always fail loudly so nobody mistakes the stub for a live API."""
         raise MuseAPIError(
