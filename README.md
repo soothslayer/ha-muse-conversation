@@ -106,12 +106,16 @@ data:
 
 - Each HA chat maps to a stable Muse side-chat ID. Follow-up messages in that HA
   chat reuse it; unrelated HA chats get separate IDs.
-- The bridge subscribes before posting, buffers events received before the
-  delivery acknowledgment, and only accepts messages linked to the acknowledged
-  user message or to an already accepted assistant message. Unattributed events
-  are ignored. If your Muse server omits parent IDs, the request will time out
-  instead of speaking another chat's answer. Live protocol compatibility remains
-  to be verified.
+- The bridge subscribes to the same side chat before posting. For a new chat,
+  Muse returns 404 until its first message creates it; the bridge posts once
+  and immediately subscribes again. It does not resend the message on failure.
+- Replies must link to the acknowledged message, or follow its user-message
+  event in the exact side chat with this gadget's source context. Another user
+  message interrupts the wait. New chats use the successful creation
+  acknowledgment to establish the first turn. Unrelated and unscoped events
+  are ignored. Live text replies through HA Assist have been verified.
+- A reply completed before a new-chat subscription opens may be missed;
+  a timeout is reported instead of resending or speaking an unrelated answer.
 - Muse has no explicit end-of-turn event in the SDK protocol. After all accepted
   messages finish, the bridge waits for three seconds of quiet. A later message
   after this window is not included. The total bridge deadline is 80 seconds;

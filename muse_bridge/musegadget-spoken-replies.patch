@@ -149,17 +149,18 @@ index 03da07e..900474b 100644
              (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
-index 0000000..e4ae5da
+index 0000000..e301991
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,291 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
 +"""Collect a correlated Muse reply from the firmware's NDJSON subscription.
 +
-+Only parent-linked messages are accepted. Unattributed account-wide events
-+must never become a spoken answer on an unrelated Home Assistant satellite.
++Parent-linked replies are accepted directly. Live unparented starts require
++the acknowledged user turn, the exact side chat, and the originating gadget.
++Unattributed account-wide events must never become a spoken answer.
 +"""
 +
 +from __future__ import annotations
@@ -205,12 +206,12 @@ index 0000000..e4ae5da
 +
 +    def log_summary(self) -> None:
 +        """Log protocol counts only, never text, identifiers, or credentials."""
-+        log.info("reply stream summary: %s matched_messages=%d roots=%d",
++        log.debug("reply stream summary: %s matched_messages=%d roots=%d",
 +                 self._diagnostics, len(self._messages), len(self._roots or ()))
-+        log.info("reply event kinds: %s", self._event_kinds)
++        log.debug("reply event kinds: %s", self._event_kinds)
 +        def fingerprint(value):
 +            return hashlib.sha256(value.encode()).hexdigest()[:12]
-+        log.info("reply ID fingerprints: roots=%s parents=%s",
++        log.debug("reply ID fingerprints: roots=%s parents=%s",
 +                 sorted(fingerprint(value) for value in (self._roots or ())),
 +                 sorted(self._parent_fingerprints))
 +
@@ -301,7 +302,7 @@ index 0000000..e4ae5da
 +                    for key in ("id", "message_id", "parent_message_id", "reply_to_message_id", "session_id")
 +                    if isinstance(value := payload.get(key), str)
 +                }
-+                log.info("reply metadata kind=%s fields=%s ID_fingerprints=%s", label, fields, ids)
++                log.debug("reply metadata kind=%s fields=%s ID_fingerprints=%s", label, fields, ids)
 +                for name in ("chat_context", "metadata"):
 +                    nested = payload.get(name)
 +                    if isinstance(nested, dict):
@@ -310,7 +311,7 @@ index 0000000..e4ae5da
 +                            key: hashlib.sha256(value.encode()).hexdigest()[:12]
 +                            for key in keys if isinstance(value := nested.get(key), str)
 +                        }
-+                        log.info("reply nested metadata %s.%s fields=%s fingerprints=%s", label, name, keys, fingerprints)
++                        log.debug("reply nested metadata %s.%s fields=%s fingerprints=%s", label, name, keys, fingerprints)
 +        if event.get("type") != "event":
 +            return
 +        seq = event.get("seq")
@@ -726,10 +727,10 @@ index 0000000..f4a39bf
 +    assert not server._agent_registered
 diff --git a/linux/tests/test_chat_reply.py b/linux/tests/test_chat_reply.py
 new file mode 100644
-index 0000000..8c20b32
+index 0000000..8f5910c
 --- /dev/null
 +++ b/linux/tests/test_chat_reply.py
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,206 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -886,14 +887,17 @@ index 0000000..8c20b32
 +
 +
 +def test_live_scoped_reply_after_exact_user_event(monkeypatch):
-+    reply = ChatReply("our-side", "device")
-+    feed(reply, event("message.user", mid="user", parent=None, session_id="our-side"))
-+    reply.bind_ack({"message_id": "user"})
-+    feed(reply,
-+         event("delta.message_start", parent="", session_id="our-side", chat_context={"device_id":"device", "chat_id":"our-side"}),
-+         event("delta.text_append", parent=None, session_id="our-side", text="Hello"),
-+         event("delta.message_done", parent="answer", session_id="our-side"))
-+    assert answer(reply, monkeypatch) == "Hello"
++    async def scenario():
++        monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", .001)
++        reply = ChatReply("our-side", "device")
++        feed(reply, event("message.user", mid="user", parent=None, session_id="our-side"))
++        reply.bind_ack({"message_id": "user"})
++        feed(reply,
++             event("delta.message_start", parent="", session_id="our-side", chat_context={"device_id":"device", "chat_id":"our-side"}),
++             event("delta.text_append", parent=None, session_id="our-side", text="Hello"),
++             event("delta.message_done", parent="answer", session_id="our-side"))
++        assert await asyncio.wait_for(reply.wait_text(), .1) == "Hello"
++    asyncio.run(scenario())
 +
 +
 +@pytest.mark.parametrize("sid,user_sid,user_id", [
@@ -901,31 +905,38 @@ index 0000000..8c20b32
 +    ("our-side", "our-side", "someone-else"),
 +])
 +def test_unlinked_scoped_start_not_accepted(sid, user_sid, user_id):
-+    reply = ChatReply(sid)
-+    reply.bind_ack({"message_id": "user"})
-+    feed(reply,
-+         event("message.user", mid=user_id, parent=None, session_id=user_sid),
-+         event("delta.message_start", parent=None, session_id=sid),
-+         event("delta.message_done", parent=None, session_id=sid, content="Private"))
-+    assert not reply._messages
++    async def scenario():
++        reply = ChatReply(sid)
++        reply.bind_ack({"message_id": "user"})
++        feed(reply,
++             event("message.user", mid=user_id, parent=None, session_id=user_sid),
++             event("delta.message_start", parent=None, session_id=sid),
++             event("delta.message_done", parent=None, session_id=sid, content="Private"))
++        assert not reply._messages
++    asyncio.run(scenario())
 +
 +
 +def test_intervening_user_stops_scoped_reply():
-+    reply = ChatReply("our-side", "device")
-+    reply.bind_ack({"message_id": "user"})
-+    feed(reply,
-+         event("message.user", mid="user", session_id="our-side"),
-+         event("message.user", mid="other", session_id="our-side"))
-+    assert "Another message" in reply.error
++    async def scenario():
++        reply = ChatReply("our-side", "device")
++        reply.bind_ack({"message_id": "user"})
++        feed(reply,
++             event("message.user", mid="user", session_id="our-side"),
++             event("message.user", mid="other", session_id="our-side"))
++        assert "Another message" in reply.error
++    asyncio.run(scenario())
 +
 +
 +def test_created_side_chat_can_match_first_reply(monkeypatch):
-+    reply = ChatReply("new-side", "device")
-+    reply.bind_ack({"message_id": "user"}, created_session=True)
-+    feed(reply,
-+         event("delta.message_start", parent=None, session_id="new-side", chat_context={"device_id":"device", "chat_id":"new-side"}),
-+         event("delta.message_done", parent="answer", session_id="new-side", content="First reply"))
-+    assert answer(reply, monkeypatch) == "First reply"
++    async def scenario():
++        monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", .001)
++        reply = ChatReply("new-side", "device")
++        reply.bind_ack({"message_id": "user"}, created_session=True)
++        feed(reply,
++             event("delta.message_start", parent=None, session_id="new-side", chat_context={"device_id":"device", "chat_id":"new-side"}),
++             event("delta.message_done", parent="answer", session_id="new-side", content="First reply"))
++        assert await asyncio.wait_for(reply.wait_text(), .1) == "First reply"
++    asyncio.run(scenario())
 diff --git a/linux/tests/test_link_client.py b/linux/tests/test_link_client.py
 index 1c0fefd..07be248 100644
 --- a/linux/tests/test_link_client.py
