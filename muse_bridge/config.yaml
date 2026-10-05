@@ -1,5 +1,5 @@
 name: Muse Bridge
-version: 0.3.8
+version: 0.3.9
 slug: muse_bridge
 description: Paired Muse conversation bridge for Home Assistant Assist, without a separate computer.
 url: https://github.com/soothslayer/ha-muse-conversation

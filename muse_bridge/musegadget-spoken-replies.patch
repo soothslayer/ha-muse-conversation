@@ -149,10 +149,10 @@ index 03da07e..900474b 100644
              (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
-index 0000000..64b9b6e
+index 0000000..e4ae5da
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,290 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -181,10 +181,11 @@ index 0000000..64b9b6e
 +class ChatReply:
 +    """One subscription, opened before posting the user message."""
 +
-+    def __init__(self, session_id: str | None = None) -> None:
++    def __init__(self, session_id: str | None = None, device_id: str | None = None) -> None:
 +        self.ready = asyncio.Event()
 +        self.changed = asyncio.Event()
 +        self.error: str | None = None
++        self.http_status = 0
 +        self._buffer = bytearray()
 +        self._pending: list[dict] = []
 +        self._pending_bytes = 0
@@ -193,6 +194,8 @@ index 0000000..64b9b6e
 +        self._last_seq = 0
 +        self._last_content = 0.0
 +        self._session_id = session_id
++        self._device_id = device_id
++        self._saw_user = False
 +        self._diagnostics = {
 +            "events": 0, "content": 0, "parented": 0, "root_matches": 0,
 +            "session_matches": 0, "outer_parent_matches": 0,
@@ -223,6 +226,7 @@ index 0000000..64b9b6e
 +            self.fail("Muse reply subscription was reset.")
 +            return
 +        if frame.kind == "response":
++            self.http_status = frame.value.status
 +            if not 200 <= frame.value.status < 300:
 +                self.fail(
 +                    f"Muse reply subscription refused: HTTP {frame.value.status}."
@@ -253,7 +257,7 @@ index 0000000..64b9b6e
 +        if ended:
 +            self.fail("Muse reply subscription closed before the turn completed.")
 +
-+    def bind_ack(self, response) -> None:
++    def bind_ack(self, response, *, created_session: bool = False) -> None:
 +        """The POST acknowledgment names the parent IDs for this turn."""
 +        if isinstance(response, dict) and isinstance(response.get("result"), dict):
 +            response = response["result"]
@@ -269,6 +273,10 @@ index 0000000..64b9b6e
 +                "Muse accepted the message without a message ID; cannot match its reply."
 +            )
 +            return
++        # A 404 followed by this successful first POST establishes the user
++        # message in a previously nonexistent, uniquely named side chat.
++        if created_session and self._session_id:
++            self._saw_user = True
 +        for event in self._pending:
 +            self._content(event)
 +        self._pending.clear()
@@ -323,15 +331,29 @@ index 0000000..64b9b6e
 +
 +    def _content(self, event: dict) -> None:
 +        kind = event.get("event")
++        payload = event.get("payload")
++        if not isinstance(payload, dict):
++            return
++        same_session = bool(self._session_id) and payload.get("session_id") == self._session_id
++        context = payload.get("chat_context")
++        our_source = (
++            same_session and bool(self._device_id) and isinstance(context, dict)
++            and context.get("device_id") == self._device_id
++            and context.get("chat_id") == self._session_id
++        )
++        if kind == "message.user" and same_session:
++            user_id = payload.get("message_id") or payload.get("id")
++            if isinstance(user_id, str) and user_id in self._roots:
++                self._saw_user = True
++            elif self._saw_user:
++                self.fail("Another message arrived in this Muse conversation; please retry.")
++            return
 +        if kind not in {
 +            "delta.message_start",
 +            "delta.text_append",
 +            "delta.message_done",
 +            "message.assistant",
 +        }:
-+            return
-+        payload = event.get("payload")
-+        if not isinstance(payload, dict):
 +            return
 +        self._diagnostics["content"] += 1
 +        parent = payload.get("reply_to_message_id") or payload.get("parent_message_id")
@@ -357,7 +379,9 @@ index 0000000..64b9b6e
 +        ):
 +            return
 +        if message_id not in self._messages:
-+            if not parent:
++            if not parent and not (
++                kind == "delta.message_start" and our_source and self._saw_user
++            ):
 +                return
 +            if len(self._messages) >= 32:
 +                self.fail("Muse returned too many reply messages.")
@@ -420,7 +444,7 @@ index 0000000..64b9b6e
 +            else:
 +                await self.changed.wait()
 diff --git a/linux/src/musegadget/link_client.py b/linux/src/musegadget/link_client.py
-index d0ee450..c3a0b26 100644
+index d0ee450..552ac5f 100644
 --- a/linux/src/musegadget/link_client.py
 +++ b/linux/src/musegadget/link_client.py
 @@ -41,6 +41,7 @@ from dataclasses import dataclass
@@ -458,7 +482,7 @@ index d0ee450..c3a0b26 100644
              for task in self._tasks:
                  task.cancel()
              for request in self._requests.values():
-@@ -274,6 +281,50 @@ class LinkSession:
+@@ -274,6 +281,62 @@ class LinkSession:
  
      # -- Sending --------------------------------------------------------------
  
@@ -480,36 +504,48 @@ index d0ee450..c3a0b26 100644
 +                return {"ok": False, "error": str(exc)}
 +
 +    async def _chat_reply(self, message: str, session_id: str | None) -> dict:
-+        subscription = ChatReply(session_id)
-+        subscribe_body = json.dumps({"session_id": session_id} if session_id else {}).encode()
-+        encrypted = self._transport.encrypt_http_request(
-+            "POST", "/chat/subscribe", subscribe_body,
-+            headers=[Header("Content-Type", "application/json"),
-+                     Header("Accept", "application/x-ndjson")],
-+        )
-+        stream_id = encrypted.stream_id
-+        self._subscriptions[stream_id] = subscription
-+        try:
-+            await self._send_frames(encrypted.frames)
-+            await asyncio.wait_for(subscription.wait_ready(), 10)
-+            ack = await self.send_chat(message, session_id)
-+            if not ack["ok"]:
-+                return ack
-+            subscription.bind_ack(ack.get("response"))
-+            return {**ack, "reply": await subscription.wait_text()}
-+        finally:
-+            subscription.log_summary()
-+            # If the session already ended, its cleanup removed the stream.
-+            if self._subscriptions.pop(stream_id, None) is not None:
++        ack = None
++        for attempt in range(2):
++            subscription = ChatReply(session_id, self._device.node_id)
++            subscribe_body = json.dumps({"session_id": session_id} if session_id else {}).encode()
++            encrypted = self._transport.encrypt_http_request(
++                "POST", "/chat/subscribe", subscribe_body,
++                headers=[Header("Content-Type", "application/json"),
++                         Header("Accept", "application/x-ndjson")],
++            )
++            stream_id = encrypted.stream_id
++            self._subscriptions[stream_id] = subscription
++            try:
++                await self._send_frames(encrypted.frames)
 +                try:
-+                    await self._send_frames(self._transport.encrypt_reset(stream_id))
-+                except Exception:
-+                    log.debug("could not close Muse reply subscription")
++                    await asyncio.wait_for(subscription.wait_ready(), 10)
++                except ConnectionError:
++                    if attempt == 0 and session_id and subscription.http_status == 404:
++                        # A new side chat does not exist until the first message.
++                        # Send exactly once, then immediately subscribe to it.
++                        ack = await self.send_chat(message, session_id)
++                        if not ack["ok"]:
++                            return ack
++                        continue
++                    raise
++                if ack is None:
++                    ack = await self.send_chat(message, session_id)
++                if not ack["ok"]:
++                    return ack
++                subscription.bind_ack(ack.get("response"), created_session=attempt == 1)
++                return {**ack, "reply": await subscription.wait_text()}
++            finally:
++                subscription.log_summary()
++                if self._subscriptions.pop(stream_id, None) is not None:
++                    try:
++                        await self._send_frames(self._transport.encrypt_reset(stream_id))
++                    except Exception:
++                        log.debug("could not close Muse reply subscription")
 +
      async def send(self, message: dict) -> None:
          frames = self._transport.encrypt_body_chunk(self._stream_id, encode_message(message))
          await self._send_frames(frames)
-@@ -300,7 +351,10 @@ class LinkSession:
+@@ -300,7 +363,10 @@ class LinkSession:
              if frame is None:
                  continue
              if frame.stream_id != self._stream_id:
@@ -690,10 +726,10 @@ index 0000000..f4a39bf
 +    assert not server._agent_registered
 diff --git a/linux/tests/test_chat_reply.py b/linux/tests/test_chat_reply.py
 new file mode 100644
-index 0000000..a531204
+index 0000000..8c20b32
 --- /dev/null
 +++ b/linux/tests/test_chat_reply.py
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,196 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -847,11 +883,54 @@ index 0000000..a531204
 +            await reply.wait_ready()
 +
 +    asyncio.run(scenario())
++
++
++def test_live_scoped_reply_after_exact_user_event(monkeypatch):
++    reply = ChatReply("our-side", "device")
++    feed(reply, event("message.user", mid="user", parent=None, session_id="our-side"))
++    reply.bind_ack({"message_id": "user"})
++    feed(reply,
++         event("delta.message_start", parent="", session_id="our-side", chat_context={"device_id":"device", "chat_id":"our-side"}),
++         event("delta.text_append", parent=None, session_id="our-side", text="Hello"),
++         event("delta.message_done", parent="answer", session_id="our-side"))
++    assert answer(reply, monkeypatch) == "Hello"
++
++
++@pytest.mark.parametrize("sid,user_sid,user_id", [
++    (None, None, "user"), ("our-side", "other-side", "user"),
++    ("our-side", "our-side", "someone-else"),
++])
++def test_unlinked_scoped_start_not_accepted(sid, user_sid, user_id):
++    reply = ChatReply(sid)
++    reply.bind_ack({"message_id": "user"})
++    feed(reply,
++         event("message.user", mid=user_id, parent=None, session_id=user_sid),
++         event("delta.message_start", parent=None, session_id=sid),
++         event("delta.message_done", parent=None, session_id=sid, content="Private"))
++    assert not reply._messages
++
++
++def test_intervening_user_stops_scoped_reply():
++    reply = ChatReply("our-side", "device")
++    reply.bind_ack({"message_id": "user"})
++    feed(reply,
++         event("message.user", mid="user", session_id="our-side"),
++         event("message.user", mid="other", session_id="our-side"))
++    assert "Another message" in reply.error
++
++
++def test_created_side_chat_can_match_first_reply(monkeypatch):
++    reply = ChatReply("new-side", "device")
++    reply.bind_ack({"message_id": "user"}, created_session=True)
++    feed(reply,
++         event("delta.message_start", parent=None, session_id="new-side", chat_context={"device_id":"device", "chat_id":"new-side"}),
++         event("delta.message_done", parent="answer", session_id="new-side", content="First reply"))
++    assert answer(reply, monkeypatch) == "First reply"
 diff --git a/linux/tests/test_link_client.py b/linux/tests/test_link_client.py
-index 1c0fefd..a64180a 100644
+index 1c0fefd..07be248 100644
 --- a/linux/tests/test_link_client.py
 +++ b/linux/tests/test_link_client.py
-@@ -273,3 +273,98 @@ def test_describe_result(result, described):
+@@ -273,3 +273,136 @@ def test_describe_result(result, described):
  def test_printable_replaces_control_characters():
      assert printable("system.run") == "system.run"
      assert printable("a\nb\x1b[2Jc") == "a?b?[2Jc"
@@ -947,6 +1026,44 @@ index 1c0fefd..a64180a 100644
 +            assert "Timed out" in result["error"]
 +        else:
 +            assert "disconnected" in result["error"]
++        stop.set()
++        await task
++    asyncio.run(scenario())
++
++
++def test_new_side_chat_posts_once_then_resubscribes(monkeypatch):
++    monkeypatch.setattr("musegadget.chat_reply.SETTLE_S", .01)
++    async def scenario():
++        session, vm = make_session(lambda *a: {"ok": True}, [])
++        stop = asyncio.Event()
++        task = asyncio.create_task(session.run(stop))
++        await vm.handshake()
++        await vm.accept_control_stream()
++        await vm.next_message()
++        reply = asyncio.create_task(session.send_chat_and_wait("Hello", "new-side"))
++        missing = await vm.next_frame()
++        await vm.send_frame(ServiceFrame.response(missing.stream_id, ApplicationResponse(status=404)))
++        post = await vm.next_frame()
++        assert post.value.path == "/chat/stream"
++        await vm.send_frame(ServiceFrame.response(post.stream_id, ApplicationResponse(
++            status=200, body=b'{"message_id":"user"}', end_body=True)))
++        assert (await vm.next_frame()).kind == "reset"
++        sub = await vm.next_frame()
++        assert sub.value.path == "/chat/subscribe"
++        assert json.loads(sub.value.body) == {"session_id": "new-side"}
++        events = [
++            {"type": "event", "event": "delta.message_start", "payload": {
++                "message_id": "answer", "session_id": "new-side", "reply_to_message_id": "",
++                "chat_context": {"device_id": session._device.node_id, "chat_id": "new-side"}}},
++            {"type": "event", "event": "delta.message_done", "payload": {
++                "message_id": "answer", "session_id": "new-side", "reply_to_message_id": "answer", "content": "Hello!"}},
++        ]
++        await vm.send_frame(ServiceFrame.response(sub.stream_id, ApplicationResponse(
++            status=200, body=b"".join(json.dumps(e).encode()+b"\n" for e in events))))
++        assert (await asyncio.wait_for(reply, 2))["reply"] == "Hello!"
++        # There is no second message POST after the successful subscription.
++        assert (await vm.next_frame()).kind == "reset"
++        assert not session._subscriptions
 +        stop.set()
 +        await task
 +    asyncio.run(scenario())
