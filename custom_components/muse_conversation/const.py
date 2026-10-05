@@ -8,4 +8,4 @@ CONF_SOCKET_PATH = "socket_path"
 TRANSPORT_LOCAL_BRIDGE = "local_bridge"
 TRANSPORT_API = "api_token"
 
-DEFAULT_SOCKET_PATH = "/run/musegadget/musegadget.sock"
+DEFAULT_SOCKET_PATH = "/share/muse-conversation/musegadget.sock"

@@ -1,0 +1,20 @@
+name: Muse Bridge
+version: 0.3.1
+slug: muse_bridge
+description: Paired Muse conversation bridge for Home Assistant Assist, without a separate computer.
+url: https://github.com/soothslayer/ha-muse-conversation
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+host_dbus: true
+map:
+  - type: share
+    read_only: false
+options:
+  sdk_token: ""
+schema:
+  sdk_token: password
+stage: experimental

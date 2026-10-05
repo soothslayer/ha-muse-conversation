@@ -18,8 +18,8 @@ git clone https://github.com/soothslayer/ha-muse-conversation.git
 git clone https://github.com/facebookincubator/muse-gadget-sdk.git
 cd muse-gadget-sdk
 git checkout 3229892e93c18a768ace42cbe1fe7133f91ca203
-git apply --check ../ha-muse-conversation/bridge/musegadget-spoken-replies.patch
-git apply ../ha-muse-conversation/bridge/musegadget-spoken-replies.patch
+git apply --check ../ha-muse-conversation/muse_bridge/musegadget-spoken-replies.patch
+git apply ../ha-muse-conversation/muse_bridge/musegadget-spoken-replies.patch
 cd linux
 uv run --with pytest --with . pytest -q
 ```

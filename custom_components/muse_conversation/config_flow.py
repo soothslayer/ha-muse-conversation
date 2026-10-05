@@ -50,7 +50,7 @@ class MuseConfigFlow(ConfigFlow, domain=DOMAIN):
                         options=[
                             {
                                 "value": TRANSPORT_LOCAL_BRIDGE,
-                                "label": "Local gadget bridge (works today)",
+                                "label": "Muse Bridge app / local bridge",
                             },
                             {
                                 "value": TRANSPORT_API,

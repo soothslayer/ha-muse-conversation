@@ -19,7 +19,7 @@
         "data": {
           "socket_path": "Service socket path"
         },
-        "description": "Uses the paired musegadget service on this host. Assist spoken answers require this repository's spoken-replies bridge patch. Select a text-to-speech engine (for example Piper) in your Assist pipeline. The original bridge still supports notifications but cannot return answers.",
+        "description": "Install and pair the Muse Bridge Home Assistant app first. Its default socket path is filled in below. For a separately installed local musegadget service, enter its socket path instead. Select a text-to-speech engine in your Assist pipeline to hear replies.",
         "title": "Local gadget bridge"
       },
       "user": {

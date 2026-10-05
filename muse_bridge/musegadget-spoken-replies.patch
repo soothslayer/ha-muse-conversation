@@ -310,10 +310,27 @@ index d0ee450..131acc7 100644
              if frame.kind == "reset":
                  log.warning("control stream reset: %s", frame.value.reason)
 diff --git a/linux/src/musegadget/service.py b/linux/src/musegadget/service.py
-index e922aa6..52f6010 100644
+index e922aa6..cff1de5 100644
 --- a/linux/src/musegadget/service.py
 +++ b/linux/src/musegadget/service.py
-@@ -222,15 +222,31 @@ class Service:
+@@ -73,6 +73,7 @@ class Service:
+     identity: Identity
+     executor: Executor
+     sdk_token: str | None = None
++    command_specs: dict | None = None
+     display_name: str = field(default_factory=socket.gethostname)
+     _stop: asyncio.Event = field(default_factory=asyncio.Event)
+     _last_refresh_attempt: float = float("-inf")
+@@ -131,7 +132,7 @@ class Service:
+             node_id=self.identity.node_id,
+             display_name=self.display_name,
+             version=__version__,
+-            commands=COMMAND_SPECS,
++            commands=COMMAND_SPECS if self.command_specs is None else self.command_specs,
+         )
+         session = LinkSession(
+             noise_host=pairing.get("noise_host") or DEFAULT_NOISE_HOST,
+@@ -222,23 +223,46 @@ class Service:
          return server
  
      async def _handle_local(self, reader, writer) -> None:
@@ -351,7 +368,12 @@ index e922aa6..52f6010 100644
              writer.close()
  
      async def _local_request(self, line: bytes) -> dict:
-@@ -239,6 +255,9 @@ class Service:
+         request = json.loads(line)
++        if isinstance(request, dict) and request.get("operation") == "status":
++            session = self._current
++            return {"ok": True, "reply_support": True,
++                    "connected": session is not None and session.registered_at is not None}
+         message = request.get("message") if isinstance(request, dict) else None
          if not isinstance(message, str) or not message.strip():
              return {"ok": False, "error": "expected {\"message\": \"...\"}"}
          session_id = request.get("session_id")
@@ -361,7 +383,7 @@ index e922aa6..52f6010 100644
          if session_id is not None and not (
              isinstance(session_id, str) and _SESSION_ID_RE.fullmatch(session_id)
          ):
-@@ -247,6 +266,8 @@ class Service:
+@@ -247,6 +271,8 @@ class Service:
          if session is None or session.registered_at is None:
              return {"ok": False, "error": "not connected to the Muse"}
          log.info("forwarding a %d-character message to the Muse", len(message))
@@ -632,10 +654,10 @@ index 1c0fefd..2ecb0d9 100644
 +        await task
 +    asyncio.run(scenario())
 diff --git a/linux/tests/test_service.py b/linux/tests/test_service.py
-index 305f9ff..c10a0fc 100644
+index 305f9ff..30102cc 100644
 --- a/linux/tests/test_service.py
 +++ b/linux/tests/test_service.py
-@@ -167,3 +167,53 @@ def test_a_rejected_sdk_token_report_keeps_the_pairing(tmp_path, monkeypatch):
+@@ -167,3 +167,84 @@ def test_a_rejected_sdk_token_report_keeps_the_pairing(tmp_path, monkeypatch):
  def test_api_root_uses_api_url_v2_or_the_muse_api():
      assert muse_api.api_root("https://api.example/") == "https://api.example"
      assert muse_api.api_root() == "https://api.muse.ai"
@@ -689,3 +711,34 @@ index 305f9ff..c10a0fc 100644
 +        writer.close()
 +        await writer.wait_closed()
 +    run_with_socket(check)
++
++
++def test_local_status_does_not_send_a_message():
++    async def check(service, path):
++        assert await ask(path, b'{"operation":"status"}\n') == {
++            "ok": True, "reply_support": True, "connected": False,
++        }
++        session = FakeSession()
++        service._current = session
++        assert (await ask(path, b'{"operation":"status"}\n'))["connected"] is True
++        assert session.sent == []
++    run_with_socket(check)
++
++
++def test_explicit_empty_commands_disable_advertised_tools(monkeypatch):
++    from musegadget import service as module
++    captured = []
++    class Session:
++        registered_at = None
++        def __init__(self, **kwargs):
++            captured.append(kwargs["device"].commands)
++        async def run(self, stop):
++            return module.Outcome.STOPPED
++    monkeypatch.setattr(module, "LinkSession", Session)
++    async def scenario():
++        for commands in (None, {}):
++            service = Service(identity=Identity("02:00:00:00:00:01"),
++                              executor=Executor(Account.current()), command_specs=commands)
++            await service._session({"vm_id":"test", "vm_name":"test", "vm_auth_token":"fake"}, {})
++    asyncio.run(scenario())
++    assert captured == [module.COMMAND_SPECS, {}]

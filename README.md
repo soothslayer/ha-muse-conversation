@@ -4,7 +4,7 @@ Use Muse as the conversation agent in a Home Assistant Assist pipeline. Assist
 sends the transcript to Muse, receives its answer, and uses the pipeline's TTS
 engine (for example, local Piper) to speak it on a Voice Preview Edition.
 
-**Spoken replies are experimental and require the companion Linux bridge patch.**
+**Spoken replies are experimental. Home Assistant OS can host the bridge as an app; no separate Linux computer is needed.**
 The code is tested with simulated Muse events and Home Assistant 2026.9.4; live
 Muse replies and Voice PE playback still need verification. The unmodified Linux
 SDK only acknowledges delivery, so updating this integration alone is insufficient.
@@ -32,25 +32,30 @@ Muse firmware is not an Assist satellite: restore its Home Assistant firmware an
 connect it to HA before using this pipeline. See the
 [official Voice PE recovery guide](https://support.nabucasa.com/hc/en-us/articles/25800241218717-Reinstalling-the-firmware).
 
-## Bridge prerequisite
+## Home Assistant OS: Muse Bridge app
 
-Follow [bridge/README.md](bridge/README.md) to install the patched, paired Linux
-`musegadget` service. The default socket is `/run/musegadget/musegadget.sock`.
-Home Assistant's process must have permission to connect to that socket.
+Install and pair the [Muse Bridge app](muse_bridge/DOCS.md) on the same Home
+Assistant box. It runs the patched SDK, stores pairing credentials in private
+app data, and shares `/share/muse-conversation/musegadget.sock` with HA Core.
+It exposes no network port and advertises no shell or file commands to Muse.
+Bluetooth on the HA host is needed for initial phone pairing; the PE's own
+pairing does not pair this app. Bluetooth proxy devices cannot supply this
+local BlueZ pairing service.
 
-For Home Assistant Container, mount the **socket directory** into the container
-and give the HA process the service socket's group permissions. Mount the directory
-rather than the socket file so service restarts do not leave a stale mount.
-This repository does not yet supply a Home Assistant OS add-on or a remote HTTP
-bridge. An unrelated Linux machine's Unix socket is not reachable from HA over
-its LAN IP; HA OS users need bridge packaging that exposes the socket to HA Core.
+The app currently needs a Muse gadget SDK token from [gadgets.muse.ai](https://gadgets.muse.ai).
+Live pairing and replies on HA OS are still being validated.
+
+For Home Assistant Container/Core, [bridge/README.md](bridge/README.md) covers
+installing the patched Linux service on the HA host. Its socket remains
+`/run/musegadget/musegadget.sock`; enter that path explicitly. Mount the socket
+**directory** into HA Container and allow HA to access its group permissions.
 
 ## Install and configure
 
 1. Copy `custom_components/muse_conversation` into your HA `custom_components`
    directory (or install this repository as a HACS custom integration) and restart HA.
 2. Under **Settings > Devices & services**, add **Muse Conversation**, select
-   **Local gadget bridge**, and enter the accessible socket path. Existing local
+   **Muse Bridge app / local bridge**, and enter the accessible socket path. Existing local
    bridge entries keep their configuration; restart HA after updating the files.
 3. Under **Settings > Voice assistants**, create or edit an Assist pipeline:
    select your speech-to-text engine, **Muse** as the conversation agent, and
