@@ -65,6 +65,14 @@ responses work. The device owner also confirmed the complete PE microphone →
 Assist → Muse → spoken reply flow. An expired or revoked backup pairing cannot replace fresh
 phone pairing; migration only works while the original refresh token is valid.
 
+## Updating a preview installation
+
+If you installed a preview using a repository URL ending in
+`#feat/assist-spoken-replies`, keep that source available until you migrate the
+installation. Changing a repository URL can create a separate app-store entry;
+do not uninstall a working paired bridge just to change its source.
+New installations should use the branch-free repository URL in the setup steps.
+
 ## Migrate an existing gadget
 
 If a gadget has been retired or flashed with HA firmware, its saved Muse

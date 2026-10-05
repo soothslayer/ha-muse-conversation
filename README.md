@@ -2,27 +2,20 @@
 
 Talk to Muse through a Home Assistant Voice Preview Edition (Voice PE) and hear
 its replies on the device. Home Assistant OS runs the Muse Bridge app, so you
-need **only your HA host and Voice PE—no separate Linux computer**.
+do not need a separate Linux computer.
 
-```text
-Voice PE microphone -> Home Assistant Assist speech-to-text
-  -> Muse Conversation integration -> Muse Bridge app -> Muse
-  -> reply text -> Assist text-to-speech -> Voice PE speaker
-```
-
-This is an experimental community integration. Muse still runs in the cloud and
-requires an internet connection, a Muse account and gadget SDK access. Local
-speech-to-text and text-to-speech do not make Muse itself offline.
+Home Assistant turns your speech into text, sends it to Muse, and reads the
+answer aloud through the PE. **This community integration is experimental.**
+Muse runs in the cloud, so an internet connection is required.
 
 ## What you need
 
 - **Home Assistant OS on a 64-bit ARM or x86 host** (`aarch64` or `amd64`).
   On Raspberry Pi, use **HA OS 18.3 or newer**: 18.2 has a Bluetooth advertising
   regression that can block pairing. Back up HA before updating the OS.
-- **A local Bluetooth adapter on the HA host**, available to HA's BlueZ service.
-  Pairing happens beside this host. An ESPHome Bluetooth proxy or the PE's own
-  Bluetooth connection cannot replace this adapter.
-- **The Muse phone app and a gadget SDK token** from
+- **Bluetooth on the HA host**, using a built-in or USB adapter supported by HA.
+  An ESPHome Bluetooth proxy cannot be used for Muse pairing.
+- **A Muse account, the Muse phone app, and a gadget SDK token** from
   [gadgets.muse.ai](https://gadgets.muse.ai). The SDK token is different from a
   saved gadget's pairing credentials or a Home Assistant access token.
 - **A Voice PE running official Home Assistant firmware**, joined to Wi-Fi and
@@ -32,27 +25,23 @@ speech-to-text and text-to-speech do not make Muse itself offline.
   configure local providers such as Whisper and Piper; that combination has not
   been tested end to end with this project.
 
-The verified setup used a Raspberry Pi 4, HA OS **18.3**, HA Core **2026.9.2**,
-Voice PE firmware **26.9.0**, an **iPhone** for pairing, and Home Assistant Cloud
-for speech recognition and TTS. New-chat and follow-up replies, including the
-complete microphone-to-speaker flow, were confirmed on that setup. Automated
-integration tests use HA **2026.9.4**; other hardware and versions may vary.
-
 For **Home Assistant Container/Core**, use the
 [separate Linux bridge instructions](bridge/README.md) instead of the HA OS app
-steps below. Mount the socket directory into HA Container and give HA permission
-to access it. That service uses `/run/musegadget/musegadget.sock`.
+steps below.
 
 ## Set up Home Assistant OS and Voice PE
 
-You install two parts from this repository: the **Muse Bridge app** maintains
-the paired Muse connection; the **Muse Conversation integration** makes it an
-Assist conversation agent. Installing either one alone is insufficient.
+Install both parts of this project:
+
+- **Muse Bridge app:** connects your HA host to Muse.
+- **Muse Conversation integration:** lets Home Assistant Assist use that connection.
+
+Then select Muse as the assistant on your PE. The steps below cover each part.
 
 ### 1. Prepare the Voice PE
 
 If the PE already works with Home Assistant Assist, keep its official firmware
-and continue. If it currently runs custom Muse/voice-ai firmware, follow the
+and continue to step 2. If it runs custom firmware, follow the
 [official firmware recovery guide](https://support.nabucasa.com/hc/en-us/articles/25800241218717-Reinstalling-the-firmware-on-Home-Assistant-Voice-Preview-Edition),
 then add the device to HA. Reinstalling firmware replaces its existing setup;
 keep any backup you need first.
@@ -83,38 +72,35 @@ Set a comfortable speaker volume and make sure its microphones are unmuted.
    with Muse. Seeing the gadget in the discovery list alone is not completion.
    The pairing window lasts **10 minutes**; restart the app to reopen it if needed.
 
-The app includes the iPhone pairing handling used in the verified setup. You do
-not need to disable Bluetooth security or mark all nearby devices trusted.
-Pair the **HA bridge**, even if this PE was previously paired with Muse while
-running different firmware. Fresh pairing is the normal setup path; advanced
-credential migration is covered in the [app documentation](muse_bridge/DOCS.md).
+This pairs the **HA host** with Muse. A previous Muse pairing on the PE does not
+pair the bridge. For migration from an existing gadget, see the
+[app documentation](muse_bridge/DOCS.md#migrate-an-existing-gadget).
 
 ### 3. Install the Muse Conversation integration
 
 Choose one installation method:
 
-- **HACS:** open HACS, choose [**Custom repositories**](https://www.hacs.xyz/docs/faq/custom_repositories/) from its menu, add
+- **HACS:** choose [**Custom repositories**](https://www.hacs.xyz/docs/faq/custom_repositories/)
+  from the HACS menu, add
   `https://github.com/soothslayer/ha-muse-conversation` with type **Integration**,
   and download **Muse Conversation**.
 - **Manual:** download this repository and copy the entire
   `custom_components/muse_conversation` folder into your HA configuration
   directory, producing `/config/custom_components/muse_conversation/manifest.json`.
 
-Restart **Home Assistant Core** after installing the integration. Adding the
-repository to the app store in step 2 does not install the integration in HACS.
+Restart **Home Assistant Core** after installing the integration.
 
-Then open **Settings > Devices & services > Add integration**, search for
-**Muse Conversation**, and choose **Muse Bridge app / local bridge**. Leave the
-socket path at:
+With the bridge app running, open **Settings > Devices & services > Add integration**.
+Search for **Muse Conversation**, choose **Muse Bridge app / local bridge**, and
+leave the socket path at:
 
 ```text
 /share/muse-conversation/musegadget.sock
 ```
 
-The bridge must be running for this step. Do not select **Direct API token**:
-that option is a nonfunctional placeholder, not an alternative pairing method.
+The **Direct API token** option is not supported; use the bridge option above.
 
-### 4. Create an Assist pipeline and assign it to the PE
+### 4. Set Muse as the PE's assistant
 
 1. Open **Settings > Voice assistants** and add an assistant named **Muse**.
 2. Choose your language and set **Conversation agent** to **Muse**.
@@ -122,12 +108,11 @@ that option is a nonfunctional placeholder, not an alternative pairing method.
    With Home Assistant Cloud, select it for both and choose a supported language
    and voice. With local providers, install and configure them first.
 4. Save the assistant. Open your Voice PE's device page under **ESPHome** and
-   set its **Assistant** selector to **Muse**. Merely creating an assistant does
-   not change the one used by the PE.
+   set its **Assistant** selector to **Muse**.
 
-You can leave other devices on their existing assistants. The optional setting
-that handles commands locally first can remain enabled; ordinary HA commands
-may then be handled locally instead of going to Muse.
+Other devices can keep their existing assistants. You can also leave **Prefer
+handling commands locally** enabled so HA can answer supported home-control
+requests itself.
 
 ### 5. Test text, then voice
 
@@ -138,11 +123,9 @@ may then be handled locally instead of going to Muse.
    **“Okay Nabu”**), then say **“Muse, say hello in one sentence.”**
 3. Confirm the PE speaks the answer. Ask another question to check continued use.
 
-There is a short delay after Muse finishes its response while the bridge waits
-for additional reply text. Requests that take too long can time out; see the
-limits below. Once working, make an HA backup that includes **Home Assistant
-configuration and the Muse Bridge app**. Treat it as sensitive: it contains the
-bridge's pairing credentials.
+Allow a few seconds for the spoken reply. Once it works, make an HA backup that
+includes **Home Assistant configuration and the Muse Bridge app**. Keep the
+backup private because it contains pairing credentials.
 
 ## Troubleshooting
 
@@ -150,12 +133,12 @@ bridge's pairing credentials.
 | --- | --- |
 | MuseGadget never appears | Check the app log, host Bluetooth adapter, and phone proximity to the **HA host**. Bluetooth proxies cannot perform this pairing. On Raspberry Pi with HA OS 18.2, update to 18.3 or newer. |
 | iPhone reaches Connect, then the gadget disappears | Use the current Muse Bridge app, restart it to reopen the 10-minute window, and complete the phone's Bluetooth pairing prompt. Check for GATT/advertising errors in its log. |
-| Integration cannot connect to the socket | Start the bridge and verify `/share/muse-conversation/musegadget.sock`. Container/Core installations use a different path and need a directory mount and permissions. |
-| Muse gets the message, but Assist returns no answer | Confirm you installed this repository's patched bridge, not the upstream acknowledgment-only SDK. Check the app log for connection errors. A phone reply proves delivery, but does not prove the bridge received it. |
+| Integration cannot connect to the socket | Start the bridge app and use `/share/muse-conversation/musegadget.sock`. For Container/Core, follow the [Linux bridge guide](bridge/README.md). |
+| Muse gets the message, but Assist returns no answer | Update the Muse Bridge app from this repository and check its log for connection errors. A reply in the phone app does not guarantee that HA received it. |
 | Text works, but the PE is silent | Check the PE's **Assistant** assignment, the pipeline's TTS provider, speaker volume and mute state. Try TTS directly to its media player to isolate playback from Muse. |
 | One steady red LED nearest the speaker | The PE is in silent mode. Turn the dial clockwise or raise its media-player volume in HA. If HA already shows a nonzero volume, change it slightly to send a fresh setting. |
 | Two steady red LEDs nearest the microphones | The microphones are muted; check the hardware microphone switch. |
-| “Busy” or a timeout | The bridge supports one active voice request. Let it finish before retrying. A timeout does not mean the message was unsent; check Muse before repeating a request with side effects. |
+| “Busy” or a timeout | Wait for the current request to finish. Check Muse before repeating a timed-out request: it may already have been delivered. |
 
 See the [official PE LED guide](https://support.nabucasa.com/hc/en-us/articles/25764604971421-Status-colors-of-the-LEDs-status-LEDs-on-Home-Assistant-Voice-Preview-Edition)
 and [bridge app troubleshooting](muse_bridge/DOCS.md#troubleshooting).
@@ -169,29 +152,10 @@ Update the **app** through HA's app store and the **integration** through HACS
 data and survives ordinary app updates and restarts. Back it up before replacing
 or uninstalling the app.
 
-If you installed a preview using a repository URL ending in
-`#feat/assist-spoken-replies`, keep that source available until you migrate the
-installation. Changing a repository URL can create a separate app-store entry;
-do not uninstall a working paired bridge just to change its source.
-New installations should use the branch-free repository URL above.
-
-## How this relates to voice-ai
-
-The [voice-pe-spoken-replies branch](https://github.com/soothslayer/voice-ai/tree/voice-pe-spoken-replies)
-added speech to Muse's ESP32 firmware. This project uses the same reply protocol:
-`/chat/stream` and `/chat/subscribe` over the paired, encrypted gadget connection.
-The patched Linux SDK runs inside the HA app and returns reply text to Assist;
-HA handles TTS and speaker playback. The custom ESP32 firmware and `voice-ai`
-HTTP TTS server are not needed for this setup.
-
-The bridge exposes a local Unix socket, not an HTTP port, and advertises no shell
-or file commands to Muse. The unmodified upstream Linux SDK only acknowledges
-message delivery; updating the HA integration alone cannot add spoken replies.
-
 ## Notifications
 
-Notifications remain acknowledgment-only and do not wait for a reply or speak it.
-The documented `notify.muse` action is retained for the local bridge:
+Notifications send a message to Muse without waiting for or speaking a reply.
+To send one from an HA automation, use:
 
 ```yaml
 action: notify.muse
@@ -222,34 +186,40 @@ data:
   message: "The door is open."
 ```
 
-## Behavior and limits
+## Limitations
 
-- Each HA chat maps to a stable Muse side-chat ID. Follow-up messages in that HA
-  chat reuse it; unrelated HA chats get separate IDs.
-- The bridge subscribes to the same side chat before posting. For a new chat,
-  Muse returns 404 until its first message creates it; the bridge posts once
-  and immediately subscribes again. It does not resend the message on failure.
-- Replies must link to the acknowledged message, or follow its user-message
-  event in the exact side chat with this gadget's source context. Another user
-  message interrupts the wait. New chats use the successful creation
-  acknowledgment to establish the first turn. Unrelated and unscoped events
-  are ignored. Live text replies through HA Assist have been verified.
-- A reply completed before a new-chat subscription opens may be missed;
-  a timeout is reported instead of resending or speaking an unrelated answer.
-- Muse has no explicit end-of-turn event in the SDK protocol. After all accepted
-  messages finish, the bridge waits for three seconds of quiet. A later message
-  after this window is not included. The total bridge deadline is 80 seconds;
-  HA's socket deadline is 90 seconds. Long-running tasks can exceed either the
-  bridge deadline or the Assist pipeline's own deadline.
-- Only one voice request is active per bridge. A concurrent request gets a spoken
-  busy error. Notifications can still be delivered while a voice reply is pending.
-- Closing the HA socket cancels the local reply wait and subscription; it does
-  not undo the message already delivered to Muse or stop remote work.
-- Answers are bounded to 8 KiB of UTF-8 text. Oversized, incomplete, missing or
-  malformed responses become spoken errors. The old acknowledgment-only bridge
-  produces an instruction to install the patch rather than a false answer.
-- This adds Muse conversation replies, not native HA entity/tool control. It does
-  not advertise the conversation `CONTROL` feature.
+- **One voice request at a time.** A second request receives a busy error.
+  Notifications can still be delivered while a reply is pending.
+- **Replies take time.** The bridge waits for three seconds of quiet after Muse
+  finishes a message. It stops waiting after 80 seconds; Assist may time out
+  sooner. Later messages are not included in the spoken reply.
+- **A very fast first reply can be missed** while the bridge connects to a new
+  chat. It reports a timeout and does not automatically resend the message.
+  Cancelling or timing out does not undo work already sent to Muse.
+- **Replies are limited to 8 KiB of text.** Missing, incomplete, or oversized
+  replies produce an error instead of being spoken as a successful answer.
+- **Muse does not gain control of HA devices through this integration.** Home
+  control can still use Assist's local command handling.
+
+Each Assist conversation uses its own Muse side chat; follow-ups in that
+conversation reuse it. The bridge accepts replies only when it can match them
+to the request. See the [Linux bridge guide](bridge/README.md) for protocol details.
+
+## Tested setup
+
+Spoken replies and follow-up messages were verified with:
+
+| Component | Version or provider |
+| --- | --- |
+| HA host | Raspberry Pi 4 |
+| Home Assistant OS | 18.3 |
+| Home Assistant Core | 2026.9.2 |
+| Voice PE firmware | 26.9.0 |
+| Phone used for pairing | iPhone |
+| Speech-to-text and text-to-speech | Home Assistant Cloud |
+
+Automated integration tests use HA 2026.9.4. Other hardware and speech providers
+have not been verified end to end with this project.
 
 ## Development
 
