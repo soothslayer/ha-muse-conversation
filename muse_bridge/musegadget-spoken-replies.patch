@@ -732,10 +732,10 @@ index 0000000..f4a39bf
 +    assert not server._agent_registered
 diff --git a/linux/tests/test_chat_reply.py b/linux/tests/test_chat_reply.py
 new file mode 100644
-index 0000000..5cffb09
+index 0000000..149854f
 --- /dev/null
 +++ b/linux/tests/test_chat_reply.py
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,236 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -955,6 +955,22 @@ index 0000000..5cffb09
 +             {**event("delta.message_start",parent=None,session_id="our-side",chat_context={"device_id":"device","chat_id":"our-side"}),"seq":2},
 +             {**event("delta.message_done",parent="answer",content="Hello again"),"seq":3})
 +        assert await asyncio.wait_for(reply.wait_text(), .1) == "Hello again"
++    asyncio.run(scenario())
++
++
++@pytest.mark.parametrize("context", [
++    {"device_id":"another-device", "chat_id":"our-side"},
++    {"device_id":"device", "chat_id":"another-chat"},
++])
++def test_scoped_reply_requires_gadget_and_chat_context(context):
++    async def scenario():
++        reply = ChatReply("our-side", "device")
++        reply.bind_ack({"message_id":"user"})
++        feed(reply,
++             event("message.user",mid="user",session_id="our-side"),
++             event("delta.message_start",parent=None,session_id="our-side",chat_context=context),
++             event("delta.message_done",parent=None,content="Unrelated"))
++        assert not reply._messages
 +    asyncio.run(scenario())
 diff --git a/linux/tests/test_link_client.py b/linux/tests/test_link_client.py
 index 1c0fefd..07be248 100644

@@ -5,9 +5,11 @@ sends the transcript to Muse, receives its answer, and uses the pipeline's TTS
 engine (for example, local Piper) to speak it on a Voice Preview Edition.
 
 **Spoken replies are experimental. Home Assistant OS can host the bridge as an app; no separate Linux computer is needed.**
-The code is tested with simulated Muse events and Home Assistant 2026.9.4; live
-Muse replies and Voice PE playback still need verification. The unmodified Linux
-SDK only acknowledges delivery, so updating this integration alone is insufficient.
+The code is tested with Home Assistant 2026.9.4. Live iPhone pairing, Muse
+registration, new-chat and follow-up text replies, and HA TTS playback have
+been verified on an HA OS 18.3 host. The combined Voice PE voice flow remains
+under validation. The unmodified Linux SDK only acknowledges delivery, so
+updating this integration alone is insufficient.
 
 ## What carries over from voice-ai
 
@@ -23,7 +25,7 @@ Voice PE with Home Assistant firmware
   -> Muse Conversation
   -> patched musegadget Unix socket
   -> Muse /chat/stream + /chat/subscribe over the paired Noise session
-  -> answer text -> Assist TTS (Piper) -> Voice PE speaker
+  -> answer text -> Assist TTS (Cloud or Piper) -> Voice PE speaker
 ```
 
 Home Assistant supplies TTS and playback, so the custom ESP32 speech patch and
@@ -44,7 +46,8 @@ pairing does not pair this app. Bluetooth proxy devices cannot supply this
 local BlueZ pairing service.
 
 The app currently needs a Muse gadget SDK token from [gadgets.muse.ai](https://gadgets.muse.ai).
-Live pairing and replies on HA OS are still being validated.
+Pairing and Assist text replies have been verified on HA OS; see the live
+validation status above.
 
 For Home Assistant Container/Core, [bridge/README.md](bridge/README.md) covers
 installing the patched Linux service on the HA host. Its socket remains

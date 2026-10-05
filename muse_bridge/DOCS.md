@@ -58,7 +58,8 @@ GATT registration and Bluetooth advertising with the same bridge version.
 
 Voice PE playback through HA TTS and the paired Muse cloud connection have
 been verified. Muse receives test messages and replies in the phone app;
-matching those replies for Assist speech remains under validation. An expired or revoked backup pairing cannot replace fresh
+new-chat and follow-up replies return through the bridge, and Assist text
+responses work. The combined PE microphone-to-speaker flow is still under test. An expired or revoked backup pairing cannot replace fresh
 phone pairing; migration only works while the original refresh token is valid.
 
 ## Migrate an existing gadget
