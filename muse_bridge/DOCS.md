@@ -4,12 +4,14 @@ Runs Muse's paired gadget connection on Home Assistant OS. Use the Muse
 Conversation integration and the Voice PE's official HA firmware for speech.
 No separate computer or external TTS relay is needed.
 
+For the complete installation, Assist configuration, and speaker checks, follow
+the [Home Assistant OS + Voice PE guide](../README.md#set-up-home-assistant-os-and-voice-pe).
+
 ## Setup
 
-1. Add this repository to the Home Assistant app store. While this change is
-   in a draft PR, use
-   `https://github.com/soothslayer/ha-muse-conversation#feat/assist-spoken-replies`
-   as the repository URL, then install Muse Bridge.
+1. In **Settings > Apps > App store > Repositories**, add
+   `https://github.com/soothslayer/ha-muse-conversation`, then install **Muse Bridge**.
+   On older HA versions, Apps is called Add-ons.
 2. Set `sdk_token` in the app configuration to your gadget SDK token from
    https://gadgets.muse.ai. This is distinct from a device pairing token.
 3. Start the app and read its log for the `MuseGadget...` Bluetooth name.
