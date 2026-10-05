@@ -15,11 +15,16 @@ jobs:
       - run: ruff check .
   bridge:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.14']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python }}
+      - if: matrix.python == '3.9'
+        run: pip install cryptography==3.3.2 websockets==13.1
       - run: |
           git clone https://github.com/facebookincubator/muse-gadget-sdk.git /tmp/muse-gadget-sdk
           cd /tmp/muse-gadget-sdk
