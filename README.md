@@ -7,8 +7,8 @@ engine (for example, local Piper) to speak it on a Voice Preview Edition.
 **Spoken replies are experimental. Home Assistant OS can host the bridge as an app; no separate Linux computer is needed.**
 The code is tested with Home Assistant 2026.9.4. Live iPhone pairing, Muse
 registration, new-chat and follow-up text replies, and HA TTS playback have
-been verified on an HA OS 18.3 host. The combined Voice PE voice flow remains
-under validation. The unmodified Linux SDK only acknowledges delivery, so
+been verified on an HA OS 18.3 host. The complete Voice PE microphone →
+Assist → Muse → TTS → speaker flow was confirmed by the device owner. The unmodified Linux SDK only acknowledges delivery, so
 updating this integration alone is insufficient.
 
 ## What carries over from voice-ai
