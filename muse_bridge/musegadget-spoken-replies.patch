@@ -149,10 +149,10 @@ index 03da07e..900474b 100644
              (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
-index 0000000..2b4147f
+index 0000000..94f588c
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,227 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -166,18 +166,20 @@ index 0000000..2b4147f
 +
 +import asyncio
 +import json
++import logging
 +import time
 +
 +MAX_LINE_BYTES = 64 * 1024
 +MAX_BUFFER_BYTES = 256 * 1024
 +MAX_REPLY_BYTES = 8192
 +SETTLE_S = 3.0
++log = logging.getLogger(__name__)
 +
 +
 +class ChatReply:
 +    """One subscription, opened before posting the user message."""
 +
-+    def __init__(self) -> None:
++    def __init__(self, session_id: str | None = None) -> None:
 +        self.ready = asyncio.Event()
 +        self.changed = asyncio.Event()
 +        self.error: str | None = None
@@ -188,6 +190,16 @@ index 0000000..2b4147f
 +        self._messages: dict[str, dict] = {}
 +        self._last_seq = 0
 +        self._last_content = 0.0
++        self._session_id = session_id
++        self._diagnostics = {
++            "events": 0, "content": 0, "parented": 0, "root_matches": 0,
++            "session_matches": 0, "outer_parent_matches": 0,
++        }
++
++    def log_summary(self) -> None:
++        """Log protocol counts only, never text, identifiers, or credentials."""
++        log.info("reply stream summary: %s matched_messages=%d roots=%d",
++                 self._diagnostics, len(self._messages), len(self._roots or ()))
 +
 +    def fail(self, message: str) -> None:
 +        self.error = message
@@ -253,6 +265,7 @@ index 0000000..2b4147f
 +        self._pending_bytes = 0
 +
 +    def _event(self, event: dict, size: int) -> None:
++        self._diagnostics["events"] += 1
 +        if event.get("type") != "event":
 +            return
 +        seq = event.get("seq")
@@ -283,6 +296,15 @@ index 0000000..2b4147f
 +        payload = event.get("payload")
 +        if not isinstance(payload, dict):
 +            return
++        self._diagnostics["content"] += 1
++        parent = payload.get("reply_to_message_id") or payload.get("parent_message_id")
++        self._diagnostics["parented"] += bool(parent)
++        self._diagnostics["root_matches"] += isinstance(parent, str) and parent in self._roots
++        outer_parent = event.get("reply_to_message_id") or event.get("parent_message_id")
++        self._diagnostics["outer_parent_matches"] += isinstance(outer_parent, str) and outer_parent in self._roots
++        self._diagnostics["session_matches"] += bool(self._session_id) and self._session_id in (
++            payload.get("session_id"), event.get("session_id"),
++        )
 +        message_id = (
 +            payload.get("message_id") or event.get("message_id") or payload.get("id")
 +        )
@@ -359,7 +381,7 @@ index 0000000..2b4147f
 +            else:
 +                await self.changed.wait()
 diff --git a/linux/src/musegadget/link_client.py b/linux/src/musegadget/link_client.py
-index d0ee450..131acc7 100644
+index d0ee450..059a3ec 100644
 --- a/linux/src/musegadget/link_client.py
 +++ b/linux/src/musegadget/link_client.py
 @@ -41,6 +41,7 @@ from dataclasses import dataclass
@@ -397,7 +419,7 @@ index d0ee450..131acc7 100644
              for task in self._tasks:
                  task.cancel()
              for request in self._requests.values():
-@@ -274,6 +281,48 @@ class LinkSession:
+@@ -274,6 +281,49 @@ class LinkSession:
  
      # -- Sending --------------------------------------------------------------
  
@@ -419,7 +441,7 @@ index d0ee450..131acc7 100644
 +                return {"ok": False, "error": str(exc)}
 +
 +    async def _chat_reply(self, message: str, session_id: str | None) -> dict:
-+        subscription = ChatReply()
++        subscription = ChatReply(session_id)
 +        encrypted = self._transport.encrypt_http_request(
 +            "POST", "/chat/subscribe", b"{}",
 +            headers=[Header("Content-Type", "application/json"),
@@ -436,6 +458,7 @@ index d0ee450..131acc7 100644
 +            subscription.bind_ack(ack.get("response"))
 +            return {**ack, "reply": await subscription.wait_text()}
 +        finally:
++            subscription.log_summary()
 +            # If the session already ended, its cleanup removed the stream.
 +            if self._subscriptions.pop(stream_id, None) is not None:
 +                try:
@@ -446,7 +469,7 @@ index d0ee450..131acc7 100644
      async def send(self, message: dict) -> None:
          frames = self._transport.encrypt_body_chunk(self._stream_id, encode_message(message))
          await self._send_frames(frames)
-@@ -300,7 +349,10 @@ class LinkSession:
+@@ -300,7 +350,10 @@ class LinkSession:
              if frame is None:
                  continue
              if frame.stream_id != self._stream_id:

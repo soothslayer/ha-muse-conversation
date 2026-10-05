@@ -1,5 +1,5 @@
 FROM debian:bookworm-slim
-ARG BUILD_VERSION=0.3.4
+ARG BUILD_VERSION=0.3.5
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUILD_ARCH}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
