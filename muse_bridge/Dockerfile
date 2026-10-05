@@ -14,6 +14,6 @@ COPY main.py /app/main.py
 ENV PYTHONUNBUFFERED=1
 CMD ["/opt/venv/bin/python", "/app/main.py"]
 
-ARG BUILD_VERSION=0.3.6
+ARG BUILD_VERSION=0.3.7
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUILD_ARCH}"

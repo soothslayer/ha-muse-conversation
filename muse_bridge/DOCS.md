@@ -30,8 +30,8 @@ execute shell/file commands for Muse.
 During setup, a temporary BlueZ agent handles iPhone Bluetooth pairing only
 for the peer writing the Muse GATT setup characteristic. It rejects unrelated
 services and devices, does not mark phones trusted, and restores the adapter's
-pairability settings when setup ends. This compatibility change is under live
-validation; discovery alone does not prove that Muse provisioning completed.
+pairability settings when setup ends. iPhone pairing, credential provisioning, and Muse registration have been
+verified on HA OS 18.3. Discovery alone does not prove setup completed.
 
 For private credential migration, a token file at
 `/share/muse-conversation/sdk_token` is imported into private app data and
@@ -56,8 +56,9 @@ correction. Setting the advertisement's discoverable flag alone does not fix it.
 Upgrading the test Raspberry Pi host from 18.2 to 18.3 restored successful
 GATT registration and Bluetooth advertising with the same bridge version.
 
-Voice PE playback through HA TTS has been verified. Live Muse replies still
-need verification. An expired or revoked backup pairing cannot replace fresh
+Voice PE playback through HA TTS and the paired Muse cloud connection have
+been verified. Muse receives test messages and replies in the phone app;
+matching those replies for Assist speech remains under validation. An expired or revoked backup pairing cannot replace fresh
 phone pairing; migration only works while the original refresh token is valid.
 
 ## Migrate an existing gadget

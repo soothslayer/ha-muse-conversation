@@ -149,10 +149,10 @@ index 03da07e..900474b 100644
              (GATT_MANAGER_IFACE, "UnregisterApplication", APP_PATH),
 diff --git a/linux/src/musegadget/chat_reply.py b/linux/src/musegadget/chat_reply.py
 new file mode 100644
-index 0000000..967ef57
+index 0000000..bec391c
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,257 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
@@ -205,7 +205,8 @@ index 0000000..967ef57
 +        log.info("reply stream summary: %s matched_messages=%d roots=%d",
 +                 self._diagnostics, len(self._messages), len(self._roots or ()))
 +        log.info("reply event kinds: %s", self._event_kinds)
-+        fingerprint = lambda value: hashlib.sha256(value.encode()).hexdigest()[:12]
++        def fingerprint(value):
++            return hashlib.sha256(value.encode()).hexdigest()[:12]
 +        log.info("reply ID fingerprints: roots=%s parents=%s",
 +                 sorted(fingerprint(value) for value in (self._roots or ())),
 +                 sorted(self._parent_fingerprints))
@@ -283,6 +284,16 @@ index 0000000..967ef57
 +        label = "/".join(labels)
 +        if len(self._event_kinds) < 16 or label in self._event_kinds:
 +            self._event_kinds[label] = self._event_kinds.get(label, 0) + 1
++        if event.get("event") in {"message.user", "delta.message_start"}:
++            payload = event.get("payload")
++            if isinstance(payload, dict):
++                fields = sorted(key for key in payload if re.fullmatch(r"[a-z_]{1,40}", key))[:30]
++                ids = {
++                    key: hashlib.sha256(value.encode()).hexdigest()[:12]
++                    for key in ("id", "message_id", "parent_message_id", "reply_to_message_id", "session_id")
++                    if isinstance(value := payload.get(key), str)
++                }
++                log.info("reply metadata kind=%s fields=%s ID_fingerprints=%s", label, fields, ids)
 +        if event.get("type") != "event":
 +            return
 +        seq = event.get("seq")
@@ -828,10 +839,10 @@ index 0000000..a531204
 +
 +    asyncio.run(scenario())
 diff --git a/linux/tests/test_link_client.py b/linux/tests/test_link_client.py
-index 1c0fefd..2ecb0d9 100644
+index 1c0fefd..a64180a 100644
 --- a/linux/tests/test_link_client.py
 +++ b/linux/tests/test_link_client.py
-@@ -273,3 +273,97 @@ def test_describe_result(result, described):
+@@ -273,3 +273,98 @@ def test_describe_result(result, described):
  def test_printable_replaces_control_characters():
      assert printable("system.run") == "system.run"
      assert printable("a\nb\x1b[2Jc") == "a?b?[2Jc"
@@ -849,6 +860,7 @@ index 1c0fefd..2ecb0d9 100644
 +        reply = asyncio.create_task(session.send_chat_and_wait("Hello", "ha-side"))
 +        sub = await vm.next_frame()
 +        assert sub.value.path == "/chat/subscribe"
++        assert json.loads(sub.value.body) == {"session_id": "ha-side"}
 +        await vm.send_frame(ServiceFrame.response(sub.stream_id, ApplicationResponse(status=200)))
 +        request = await vm.next_frame()
 +        assert request.value.path == "/chat/stream"
