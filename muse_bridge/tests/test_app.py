@@ -55,3 +55,43 @@ def test_missing_token_has_actionable_error(settings):
 
 def test_commands_are_rejected():
     assert app.ConversationOnlyExecutor().run("shell", {"command": "echo unsafe"})["ok"] is False
+
+
+def test_pairing_import_retains_identity_and_forces_refresh(settings):
+    shared, state, _ = settings
+    source = shared / "pairing-import.json"
+    source.write_text(json.dumps({"identity": {"mac":"02:00:00:ab:cd:ef"},
+        "pairing": {"access_token":"fake-access", "refresh_token":"fake-refresh", "unexpected":"omit"}}))
+    app.import_pairing()
+    assert not source.exists()
+    assert app.identity.load_or_create().node_id == "homelink-abcdef"
+    pairing = app.config.load_json(app.config.PAIRING_FILE)
+    assert pairing["access_token_saved_at"] == 0
+    assert "unexpected" not in pairing
+    assert stat.S_IMODE((state / app.config.PAIRING_FILE).stat().st_mode) == 0o600
+
+
+def test_pairing_import_refuses_to_replace_live_identity(settings):
+    shared, state, _ = settings
+    app.config.save_json(app.config.PAIRING_FILE, {"access_token":"already-paired"})
+    source = shared / "pairing-import.json"
+    source.write_text('{}')
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        app.import_pairing()
+    assert source.exists()
+    assert app.config.load_json(app.config.PAIRING_FILE)["access_token"] == "already-paired"
+
+
+@pytest.mark.parametrize("change", [
+    {"identity":{"mac":"wrong"}},
+    {"pairing":{"access_token":"only-one-token"}},
+    {"pairing":{"access_token":"a", "refresh_token":"r", "api_url_v2":"http://example.com"}},
+])
+def test_pairing_import_validates_before_writing(settings, change):
+    shared, state, _ = settings
+    data = {"identity":{"mac":"02:00:00:ab:cd:ef"}, "pairing":{"access_token":"a", "refresh_token":"r"}}
+    data.update(change)
+    (shared / "pairing-import.json").write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        app.import_pairing()
+    assert not state.exists()

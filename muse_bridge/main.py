@@ -5,10 +5,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from musegadget import config, identity
 from musegadget.service import Service
@@ -74,11 +76,44 @@ def prepare_settings(options_path=Path("/data/options.json")) -> None:
     SHARED_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
 
 
+def import_pairing() -> None:
+    """Migrate an existing, stopped gadget without requiring Bluetooth again."""
+    source = SHARED_DIR / "pairing-import.json"
+    if not source.exists():
+        return
+    if config.load_json(config.PAIRING_FILE):
+        raise ValueError("Already paired; refusing to overwrite the existing pairing.")
+    data = json.loads(source.read_text())
+    mac = data.get("identity", {}).get("mac", "")
+    pairing = data.get("pairing", {})
+    if not isinstance(mac, str) or not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac):
+        raise ValueError("Pairing import requires the original gadget MAC identity.")
+    if not isinstance(pairing, dict) or any(
+        not isinstance(pairing.get(key), str) or not pairing[key].strip()
+        for key in ("access_token", "refresh_token")
+    ):
+        raise ValueError("Pairing import requires both device tokens.")
+    api = pairing.get("api_url_v2", "")
+    if api and (not isinstance(api, str) or urlsplit(api).scheme != "https"):
+        raise ValueError("The imported Muse API URL must use HTTPS.")
+    noise_host = pairing.get("noise_host", "")
+    if noise_host and (not isinstance(noise_host, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", noise_host)):
+        raise ValueError("The imported Muse connection host is invalid.")
+    config.save_json(config.IDENTITY_FILE, {"mac": mac})
+    config.save_json(config.PAIRING_FILE, {
+        key: value for key, value in pairing.items()
+        if key in {"access_token", "refresh_token", "username", "api_url_v2", "noise_host"}
+    } | {"token_type": "device", "access_token_saved_at": 0})
+    source.unlink()
+    _LOGGER.info("Imported existing gadget pairing into private app storage.")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     os.environ.setdefault(config.STATE_DIR_ENV, "/data/musegadget")
     os.environ.setdefault(config.SOCKET_ENV, str(SHARED_DIR / "musegadget.sock"))
     prepare_settings()
+    import_pairing()
     if not config.load_json(config.PAIRING_FILE):
         _LOGGER.info("Pair this Home Assistant host in the Muse phone app; see the pairing name below.")
         # This SDK command uses the HA host's BlueZ service through D-Bus.

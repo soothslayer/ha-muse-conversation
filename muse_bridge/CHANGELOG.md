@@ -1,3 +1,7 @@
+# 0.3.3
+
+- Support private migration of an existing stopped gadget pairing.
+
 # 0.3.2
 
 - Mark the pairing advertisement discoverable for BlueZ kernel-managed flags.

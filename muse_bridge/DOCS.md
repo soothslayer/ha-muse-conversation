@@ -43,3 +43,17 @@ session also needs to be connected. A read-only status request is supported:
 
 This is experimental. Automated tests cover reply handling; live HA OS
 Bluetooth pairing and Voice PE playback must be tested on the target host.
+
+## Migrate an existing gadget
+
+If a gadget has been retired or flashed with HA firmware, its saved Muse
+pairing can be migrated instead of pairing the HA Bluetooth adapter again.
+Only do this with your own backup, and keep the old Muse firmware stopped.
+
+Place a mode-0600 `pairing-import.json` in `/share/muse-conversation` with
+`identity.mac` set to the original gadget's lowercase MAC and `pairing`
+containing its `access_token`, `refresh_token`, and any original `api_url_v2`
+or `noise_host`. Do not substitute a different device identity. The app
+imports this into private data, forces token refresh, and deletes the import
+file. It refuses to overwrite an already paired app. Never put this file in
+a repository, terminal history, or a support log.
