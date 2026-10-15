@@ -152,7 +152,7 @@ new file mode 100644
 index 0000000..8cec49e
 --- /dev/null
 +++ b/linux/src/musegadget/chat_reply.py
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,299 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Reply protocol adapted from the Meta Muse gadget SDK ESP32 chat session.
 +
