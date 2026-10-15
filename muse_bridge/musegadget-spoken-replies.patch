@@ -172,8 +172,11 @@ index 0000000..8cec49e
 +import re
 +import time
 +
-+MAX_LINE_BYTES = 64 * 1024
-+MAX_BUFFER_BYTES = 256 * 1024
++# Meta's reply stream now emits occasional large metadata/full-message events
++# well over 64KB per line (even on short turns); keep the framing bound but
++# generous. The pre-ack pending buffer must comfortably exceed one max line.
++MAX_LINE_BYTES = 1024 * 1024
++MAX_BUFFER_BYTES = 4 * 1024 * 1024
 +MAX_REPLY_BYTES = 8192
 +SETTLE_S = 3.0
 +log = logging.getLogger(__name__)
